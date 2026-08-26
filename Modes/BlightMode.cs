@@ -130,21 +130,24 @@ namespace AutoExile.Modes
 
                 // Suppress combat repositioning during phases where BlightMode drives navigation.
                 // Combat still scans threats and fires skills — just won't move the player.
-                // Allow combat positioning in WaitForCompletion (no tower action) and Sweep when fighting.
-                bool allowCombatMovement = ((_phase == BlightPhase.WaitForCompletion && _towerAction == null)
+                // Allow combat positioning in Sweep phase or in WaitForCompletion (when StandAtTower is off and no tower action).
+                bool allowCombatMovement = ((_phase == BlightPhase.WaitForCompletion && !_settings.StandAtTower.Value && _towerAction == null)
                     || (_phase == BlightPhase.Sweep && !_sweepReturningToPump))
                     && ctx.Combat.NearbyMonsterCount > 0;
                 ctx.Combat.SuppressPositioning = !allowCombatMovement;
 
                 // During active encounter phases, anchor combat to the defense point:
                 // - DefenseAnchor: target scoring favors monsters closer to the pump hub
-                // - LeashAnchor: positioning won't pull player beyond network bubble of pump hub
+                // - LeashAnchor: positioning won't pull player beyond safety radius during defense
+                // During Sweep phase, allow full network bubble so player can chase stragglers across lanes
                 bool inEncounterPhase = _phase is BlightPhase.TowerManagement or BlightPhase.WaitForCompletion or BlightPhase.Sweep;
                 if (inEncounterPhase && _blight.DefensePosition.HasValue)
                 {
                     ctx.Combat.Profile.DefenseAnchor = _blight.DefensePosition.Value;
                     ctx.Combat.Profile.LeashAnchor = _blight.DefensePosition.Value;
-                    ctx.Combat.Profile.LeashRadius = Systems.Pathfinding.NetworkBubbleRadius;
+                    ctx.Combat.Profile.LeashRadius = (_settings.StandAtTower.Value && _phase != BlightPhase.Sweep)
+                        ? _settings.SweepPumpRadius.Value
+                        : Systems.Pathfinding.NetworkBubbleRadius;
                 }
                 else
                 {
@@ -223,7 +226,7 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            // Cancel all in-flight systems on any area change (bug fix)
+            // Cancel all in-flight systems on any area change
             ModeHelpers.CancelAllSystems(ctx);
             _hideoutFlow.Cancel();
 
@@ -290,14 +293,9 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            // Actively scan for pump each tick — EntityAdded events may not re-fire
-            // on re-entry to the same map instance (e.g. after death via portal).
             if (!_blight.PumpPosition.HasValue)
                 _blight.ScanForPump(gc);
 
-            // Check encounter-active FIRST — on re-entry after death, the encounter
-            // is already running. If pump is found + encounter active, skip straight
-            // to the right phase (don't go through NavigateToPump → StartEncounter).
             if (_blight.IsEncounterActive)
             {
                 _phase = _blight.IsTimerDone ? BlightPhase.WaitForCompletion : BlightPhase.TowerManagement;
@@ -318,8 +316,6 @@ namespace AutoExile.Modes
 
             var elapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
 
-            // If pump not found after 2s, do a small movement to trigger entity loading
-            // (portal can land right on the pump, which may not load until player moves)
             if (!_nudgedForPump && elapsed > 2)
             {
                 _nudgedForPump = true;
@@ -330,8 +326,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // After 5s, check for blight entities as evidence of an active encounter
-            // (pump entity may not be in the entity list but towers/monsters are)
             if (elapsed > 5)
             {
                 bool hasBlightEntities = _blight.CachedTowers.Count > 0 ||
@@ -339,7 +333,6 @@ namespace AutoExile.Modes
 
                 if (hasBlightEntities)
                 {
-                    // Force encounter state so sweep/completion logic works
                     _blight.IsEncounterActive = true;
                     _blight.IsTimerDone = true;
                     _blight.TimerDoneAt ??= DateTime.Now;
@@ -368,7 +361,6 @@ namespace AutoExile.Modes
 
             if (_blight.IsEncounterActive)
             {
-                // Require positive proof: pump StateMachine "activated > 0", or pump gone + monsters
                 var pump = FindPumpEntity(ctx.Game);
                 bool confirmed = (pump != null && IsPumpActivated(pump))
                     || (pump == null && _blight.AliveMonsterCount > 5);
@@ -382,7 +374,6 @@ namespace AutoExile.Modes
                     return;
                 }
 
-                // False positive — reset and continue navigating
                 _blight.IsEncounterActive = false;
             }
 
@@ -418,9 +409,6 @@ namespace AutoExile.Modes
             var gc = ctx.Game;
             Entity? pump = FindPumpEntity(gc);
 
-            // The ONLY way to advance: positive confirmation that pump StateMachine
-            // has "activated > 0". Don't trust IsEncounterActive (non-targetable fallback
-            // can false-positive). Don't trust "pump disappeared". Require hard proof.
             if (pump != null && IsPumpActivated(pump))
             {
                 _phase = BlightPhase.FastForward;
@@ -430,8 +418,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Secondary confirmation: pump entity gone + monsters spawning = encounter started
-            // (pump entity can unload from entity list after activation)
             if (pump == null && _blight.IsEncounterActive && _blight.AliveMonsterCount > 5)
             {
                 _phase = BlightPhase.FastForward;
@@ -441,13 +427,11 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // If IsEncounterActive got set but we can't confirm it, reset the false positive
             if (_blight.IsEncounterActive && pump != null && !IsPumpActivated(pump))
             {
                 _blight.IsEncounterActive = false;
             }
 
-            // After clicking, wait for verification delay before retrying
             if (_pumpClickAttempts > 0)
             {
                 var msSinceClick = (DateTime.Now - _lastPumpClickAt).TotalMilliseconds;
@@ -504,11 +488,6 @@ namespace AutoExile.Modes
             }
         }
 
-        /// <summary>
-        /// Check if pump StateMachine has "activated > 0" — the definitive proof
-        /// that the encounter has actually started. This is the ONLY reliable signal;
-        /// IsTargetable changes and other fallbacks can false-positive.
-        /// </summary>
         private static bool IsPumpActivated(Entity pump)
         {
             if (!pump.TryGetComponent<StateMachine>(out var states))
@@ -563,7 +542,6 @@ namespace AutoExile.Modes
 
             if ((DateTime.Now - _phaseStartTime).TotalSeconds > 10)
             {
-                // Only advance on timeout if encounter is genuinely active (monsters, timer, etc.)
                 if (_blight.IsEncounterActive)
                 {
                     _blight.HasClickedFastForward = true;
@@ -572,7 +550,6 @@ namespace AutoExile.Modes
                 }
                 else
                 {
-                    // Encounter never actually started — go back to StartEncounter to retry
                     _phase = BlightPhase.StartEncounter;
                     _phaseStartTime = DateTime.Now;
                     _pumpClickAttempts = 0;
@@ -615,20 +592,45 @@ namespace AutoExile.Modes
                 return;
             }
 
-            var sweepDelay = _settings.SweepDelayAfterTimerSeconds.Value;
-            if ((DateTime.Now - _phaseStartTime).TotalSeconds > sweepDelay)
+            // Safety check: ensure we never enter sweep while timer is still running in-game
+            if (!_blight.IsTimerDone)
             {
-                // Always enter sweep after delay — monsters may exist beyond render range
-                // even if AliveMonsterCount == 0. Sweep patrols lanes to find them.
-                CancelTowerAction(ctx);
-                EnterSweepPhase();
+                _phase = BlightPhase.TowerManagement;
+                _phaseStartTime = DateTime.Now;
+                StatusText = "Timer still running — managing towers at pump";
                 return;
             }
 
-            // Timer is done — prioritize combat over tower actions.
-            // If nearby monsters exist, cancel tower actions and let combat positioning
-            // take over (Combat.Tick runs before this, but tower navigation overrides
-            // combat movement each tick). Only build towers when no immediate threats.
+            var elapsedAfterTimer = (DateTime.Now - _phaseStartTime).TotalSeconds;
+            var sweepDelay = _settings.SweepDelayAfterTimerSeconds.Value;
+
+            // Fallback: 60 seconds (1 minute) after timer ends, force transition to sweep phase
+            // even if StandAtTower is enabled, to hunt down remaining stragglers and allow loot to spawn.
+            const float StandAtTowerFallbackSeconds = 60f;
+            bool forceSweepFallback = elapsedAfterTimer >= StandAtTowerFallbackSeconds;
+
+            if (elapsedAfterTimer > sweepDelay && !forceSweepFallback)
+            {
+                if (_settings.StandAtTower.Value && _blight.AliveMonsterCount > 0)
+                {
+                    TickSafetyPosition(ctx);
+                    var remainingFallback = Math.Max(0f, StandAtTowerFallbackSeconds - elapsedAfterTimer);
+                    StatusText = $"Standing at tower — waiting for monsters ({_blight.AliveMonsterCount} alive, sweep fallback in {remainingFallback:F0}s)";
+                    return;
+                }
+            }
+
+            if (elapsedAfterTimer > sweepDelay || forceSweepFallback)
+            {
+                CancelTowerAction(ctx);
+                EnterSweepPhase();
+                StatusText = forceSweepFallback
+                    ? $"1m fallback after timer — sweeping {_blight.AliveMonsterCount} stragglers"
+                    : "Timer done & delay passed — sweeping remaining monsters";
+                return;
+            }
+
+            // Before sweep delay: prioritize combat over tower actions.
             if (ctx.Combat.NearbyMonsterCount > 0)
             {
                 if (_towerAction != null)
@@ -652,7 +654,6 @@ namespace AutoExile.Modes
                 return;
 
             // Combat priority — cancel tower navigation if monsters are nearby.
-            // Tower building shouldn't override combat; let CombatSystem handle threats first.
             if (_towerAction != null && ctx.Combat.NearbyMonsterCount > 0)
             {
                 CancelTowerAction(ctx);
@@ -660,20 +661,47 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // Don't build or upgrade towers if "Don't Build Towers" is enabled
+            if (_settings.DontBuildTowers.Value)
+            {
+                if (_towerAction != null)
+                    CancelTowerAction(ctx);
+
+                TickSafetyPosition(ctx);
+                StatusText = $"Towers disabled — {_blight.LaneDebug}";
+                return;
+            }
+
+            // If StandAtTower is enabled, hold position near the pump
+            if (_settings.StandAtTower.Value)
+            {
+                TickSafetyPosition(ctx);
+            }
+
             // Tick active tower action
             if (_towerAction != null)
             {
+                // If StandAtTower is enabled, cancel tower actions that require walking away
+                if (_settings.StandAtTower.Value && _blight.DefensePosition.HasValue)
+                {
+                    var distFromTower = Vector2.Distance(_towerAction.TargetGridPos, _blight.DefensePosition.Value);
+                    if (distFromTower > _settings.TowerApproachDistance.Value + 15f)
+                    {
+                        CancelTowerAction(ctx);
+                        StatusText = "Standing at tower — distant tower build cancelled";
+                        return;
+                    }
+                }
+
                 _towerAction.Tick(gc);
                 if (_towerAction.IsComplete)
                 {
                     if (_towerAction.Succeeded)
                     {
                         StatusText = _towerAction.Status;
-                        // Just built/upgraded — immediately try upgrading again (stay at tower)
                         _towerAction = null;
                         if (!TryStartTowerAction(ctx, TowerAction.ActionType.Upgrade))
                         {
-                            // No upgrade available — apply normal cooldown before next action
                             _lastTowerActionEndAt = DateTime.Now;
                         }
                     }
@@ -694,7 +722,6 @@ namespace AutoExile.Modes
             // Build cooldown
             if ((DateTime.Now - _lastTowerActionEndAt).TotalMilliseconds < _settings.TowerBuildCooldownMs.Value)
             {
-                // While waiting, stay near pump for safety
                 TickSafetyPosition(ctx);
                 StatusText = $"Tower cooldown — {_blight.LaneDebug}";
                 return;
@@ -721,10 +748,6 @@ namespace AutoExile.Modes
             }
         }
 
-        /// <summary>
-        /// When idle between tower actions, stay within safety range of the pump.
-        /// Don't wander off — minions will clear nearby enemies.
-        /// </summary>
         private void TickSafetyPosition(BotContext ctx)
         {
             if (!_blight.DefensePosition.HasValue) return;
@@ -733,12 +756,10 @@ namespace AutoExile.Modes
             var defensePos = _blight.DefensePosition.Value;
             var distToDefense = Vector2.Distance(playerPos, defensePos);
 
-            // Safety radius — stay reasonably close to the defense point (lane hub)
             float safetyRadius = 30f;
 
             if (distToDefense > safetyRadius && !ctx.Navigation.IsNavigating)
             {
-                // Move back toward defense point (but not on top of it)
                 var dir = Vector2.Normalize(defensePos - playerPos);
                 var targetPos = defensePos - dir * 10f; // stand 10 grid units from hub
                 ctx.Navigation.NavigateTo(gc, targetPos);
@@ -752,6 +773,17 @@ namespace AutoExile.Modes
             action.Tick(ctx.Game);
             if (action.CurrentPhase == TowerAction.Phase.Failed)
                 return false;
+
+            // If StandAtTower is enabled, reject distant tower builds/upgrades that require walking away
+            if (_settings.StandAtTower.Value && _blight.DefensePosition.HasValue)
+            {
+                var dist = Vector2.Distance(action.TargetGridPos, _blight.DefensePosition.Value);
+                if (dist > _settings.TowerApproachDistance.Value + 15f)
+                {
+                    action.Cancel(ctx.Game);
+                    return false;
+                }
+            }
 
             _towerAction = action;
             return true;
@@ -793,6 +825,16 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // Safety guard: if timer is not actually done, abort sweep and return to TowerManagement
+            if (!_blight.IsTimerDone)
+            {
+                ctx.Navigation.Stop(ctx.Game);
+                _phase = BlightPhase.TowerManagement;
+                _phaseStartTime = DateTime.Now;
+                StatusText = "Timer still running — returning to tower management";
+                return;
+            }
+
             var gc = ctx.Game;
             var playerPos = gc.Player.GridPosNum;
             var defensePos = _blight.DefensePosition ?? playerPos;
@@ -803,7 +845,6 @@ namespace AutoExile.Modes
             var returnSeconds = _settings.SweepPumpReturnSeconds.Value;
 
             // --- Track pump proximity timer ---
-            // Reset timer when inside pump radius, start/continue when outside
             if (distToDefense <= pumpRadius)
             {
                 _sweepLastOutsidePumpAt = DateTime.MinValue;
@@ -815,7 +856,6 @@ namespace AutoExile.Modes
             }
 
             // --- Forced return to pump ---
-            // Been outside pump radius too long — return to refresh state machine and check threats
             bool awayTooLong = _sweepLastOutsidePumpAt != DateTime.MinValue
                 && (now - _sweepLastOutsidePumpAt).TotalSeconds > returnSeconds;
 
@@ -824,11 +864,9 @@ namespace AutoExile.Modes
                 _sweepReturningToPump = true;
                 if (distToDefense < 18f)
                 {
-                    // Arrived at pump — reset and resume sweep
                     _sweepReturningToPump = false;
                     _sweepLastOutsidePumpAt = DateTime.MinValue;
                     ctx.Navigation.Stop(gc);
-                    // Reset exploration so we re-sweep from pump outward
                     if (ctx.Exploration.IsInitialized)
                         ctx.Exploration.ResetSeen();
                     _sweepWasSearching = false;
@@ -843,7 +881,6 @@ namespace AutoExile.Modes
             }
 
             // --- No-monster timeout ---
-            // If no monsters found for SweepTimeoutSeconds, give up
             if ((now - _sweepLastMonsterSeenAt).TotalSeconds > _settings.SweepTimeoutSeconds.Value)
             {
                 ctx.Navigation.Stop(gc);
@@ -857,7 +894,6 @@ namespace AutoExile.Modes
             {
                 _sweepLastMonsterSeenAt = now;
 
-                // Combat stuck detection: if monster count isn't decreasing, move on
                 if (_sweepCombatEngageTime == DateTime.MinValue || ctx.Combat.NearbyMonsterCount < _sweepCombatEngageCount)
                 {
                     _sweepCombatEngageTime = now;
@@ -867,7 +903,6 @@ namespace AutoExile.Modes
                 var combatElapsed = (now - _sweepCombatEngageTime).TotalSeconds;
                 if (combatElapsed > SweepCombatStuckSeconds)
                 {
-                    // Stuck fighting same monsters too long — explore elsewhere
                     _sweepCombatEngageTime = DateTime.MinValue;
                     _sweepCombatEngageCount = 0;
                     if (!_sweepWasSearching)
@@ -882,7 +917,6 @@ namespace AutoExile.Modes
                 else
                 {
                     _sweepWasSearching = false;
-                    // CombatSystem handles fighting + positioning (SuppressPositioning = false above)
                     StatusText = $"Sweep: fighting ({ctx.Combat.NearbyMonsterCount} nearby, {ctx.Combat.CachedMonsterCount} total)";
                 }
                 return;
@@ -893,7 +927,6 @@ namespace AutoExile.Modes
             {
                 _sweepLastMonsterSeenAt = now;
 
-                // Transition from fighting → searching: reset exploration
                 if (!_sweepWasSearching)
                 {
                     _sweepWasSearching = true;
@@ -903,8 +936,6 @@ namespace AutoExile.Modes
                 _sweepCombatEngageTime = DateTime.MinValue;
                 _sweepCombatEngageCount = 0;
 
-                // Find the monster closest to defense point (biggest threat).
-                // The return-to-pump timer (SweepPumpReturnSeconds) prevents staying away too long.
                 var nearestToPumpPos = FindMonsterClosestToDefense(gc, defensePos, ctx.Combat.BlacklistedEnemies);
                 if (nearestToPumpPos.HasValue)
                 {
@@ -929,23 +960,16 @@ namespace AutoExile.Modes
             TickSweepExplore(ctx, playerPos, defensePos);
         }
 
-        /// <summary>
-        /// Explore the map to find remaining monsters. Falls back to orbiting the defense point
-        /// when exploration is exhausted.
-        /// </summary>
         private void TickSweepExplore(BotContext ctx, Vector2 playerPos, Vector2 defensePos)
         {
             var gc = ctx.Game;
 
-            // Let current navigation finish before picking a new target
             if (ctx.Navigation.IsNavigating)
             {
                 StatusText = $"Sweep: searching for monsters ({ctx.Combat.CachedMonsterCount} alive)";
                 return;
             }
 
-            // Try exploration target. The return-to-pump timer (SweepPumpReturnSeconds)
-            // ensures we don't stay away from the defense point for too long.
             if (ctx.Exploration.IsInitialized)
             {
                 var target = ctx.Exploration.GetNextExplorationTarget(playerPos);
@@ -957,7 +981,6 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Exploration exhausted — orbit the defense point to find stragglers
             if (_blight.DefensePosition.HasValue)
             {
                 var distOrbit = Vector2.Distance(playerPos, defensePos);
@@ -980,10 +1003,6 @@ namespace AutoExile.Modes
             StatusText = $"Sweep: searching (no targets, {ctx.Combat.CachedMonsterCount} alive)";
         }
 
-        /// <summary>
-        /// Find the alive hostile monster closest to the defense point (biggest threat).
-        /// Uses OnlyValidEntities (entity list), not blight-specific cache.
-        /// </summary>
         private static Vector2? FindMonsterClosestToDefense(GameController gc, Vector2 defensePos, HashSet<string> enemyBlacklist)
         {
             float bestDist = float.MaxValue;
@@ -1026,7 +1045,6 @@ namespace AutoExile.Modes
 
         private void TickOpenChests(BotContext ctx, InteractionResult interactionResult)
         {
-            // Handle completed loot pickup — record only on confirmed success
             _lootTracker.HandleResult(interactionResult, ctx);
 
             if (interactionResult == InteractionResult.Succeeded || interactionResult == InteractionResult.Failed)
@@ -1044,7 +1062,6 @@ namespace AutoExile.Modes
             var gc = ctx.Game;
             var playerPos = gc.Player.GridPosNum;
 
-            // Priority 1: Pick up visible loot (failed items filtered at scan time)
             ctx.Loot.Scan(gc);
             var best = ctx.Loot.GetBestCandidate();
             if (best != null)
@@ -1058,8 +1075,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Priority 2: Open nearest visible chest (don't require cache membership —
-            // if it's visible, unopened, and a chest entity, open it)
             Entity? nearestChest = null;
             float nearestDist = float.MaxValue;
 
@@ -1083,7 +1098,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Priority 3: Navigate to cached off-screen chest
             if (_blight.ChestPositions.Count > 0)
             {
                 Vector2? nearestCachedChest = null;
@@ -1098,7 +1112,6 @@ namespace AutoExile.Modes
                 {
                     if (bestDist < 25f)
                     {
-                        // Close enough but no entity found — stale cache entry
                         _blight.ChestPositions.Remove(nearestCachedChest.Value);
                         StatusText = $"Stale chest removed (was at dist {bestDist:F0}, {_blight.ChestPositions.Count} remaining)";
                         return;
@@ -1110,7 +1123,6 @@ namespace AutoExile.Modes
                         var pathFound = ctx.Navigation.NavigateTo(gc, nearestCachedChest.Value);
                         if (!pathFound)
                         {
-                            // Can't path to this chest — remove it and try another next tick
                             _blight.ChestPositions.Remove(nearestCachedChest.Value);
                             StatusText = $"No path to chest (dist: {bestDist:F0}) — removed, {_blight.ChestPositions.Count} remaining";
                             return;
@@ -1123,7 +1135,6 @@ namespace AutoExile.Modes
 
                 if (ctx.Navigation.IsNavigating)
                 {
-                    // Timeout individual chest navigation — if stuck or path too long, skip it
                     if (_chestNavStartedAt != DateTime.MinValue
                         && (DateTime.Now - _chestNavStartedAt).TotalSeconds > ChestNavTimeoutSeconds)
                     {
@@ -1132,7 +1143,6 @@ namespace AutoExile.Modes
                             _blight.ChestPositions.Remove(_currentChestTarget.Value);
                         else if (_blight.ChestPositions.Count > 0)
                         {
-                            // Remove the nearest cached chest we were heading to
                             Vector2? nearest = null;
                             float nd = float.MaxValue;
                             foreach (var p in _blight.ChestPositions)
@@ -1152,7 +1162,6 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Grace period
             if (_lastEmptyScanAt == DateTime.MinValue)
                 _lastEmptyScanAt = DateTime.Now;
 
@@ -1187,7 +1196,6 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            // Already in hideout? Done.
             if (gc.Area.CurrentArea.IsHideout)
                 return;
 
@@ -1198,14 +1206,12 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Let InteractionSystem handle clicking if it's busy (retries, UI blocking, etc.)
             if (ctx.Interaction.IsBusy)
             {
                 StatusText = $"Clicking portal to exit";
                 return;
             }
 
-            // Try to find live portal entity first
             Entity? portal = ModeHelpers.FindNearestPortal(gc);
             var playerPos = gc.Player.GridPosNum;
 
@@ -1222,14 +1228,12 @@ namespace AutoExile.Modes
                     return;
                 }
 
-                // Use InteractionSystem for click verification and UI blocking
                 ctx.Navigation.Stop(gc);
                 ctx.Interaction.InteractWithEntity(portal, ctx.Navigation);
                 StatusText = "Clicking portal to exit";
                 return;
             }
 
-            // No live portal — navigate to cached position to bring it into entity range
             if (_blight.PortalPosition.HasValue)
             {
                 var cachedPos = _blight.PortalPosition.Value;
@@ -1243,7 +1247,6 @@ namespace AutoExile.Modes
                     return;
                 }
 
-                // We're close — portal entity should be visible now
                 StatusText = "Near cached portal — waiting for entity to appear";
                 return;
             }

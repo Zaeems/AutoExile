@@ -628,31 +628,37 @@ namespace AutoExile
         [Submenu(CollapsedByDefault = true)]
         public class BlightSettings
         {
-            [Menu("Ignore Currency", "Skip currency checks when building/upgrading towers (debug: use if currency UI isn't being read).")]
+            [Menu("Stand at Tower", "When enabled, forces the player to hold position near the blight pump/tower until the timer finishes, preventing early wandering or distant sweeping.")]
+            public ToggleNode StandAtTower { get; set; } = new ToggleNode(false);
+
+            [Menu("Don't Build Towers", "When enabled, disables all tower building and upgrading actions during the Blight encounter.")]
+            public ToggleNode DontBuildTowers { get; set; } = new ToggleNode(false);
+
+            [Menu("Ignore Currency", "Skip currency checks when building/upgrading towers (debug mode for when currency UI is unreadable).")]
             public ToggleNode IgnoreCurrency { get; set; } = new ToggleNode(false);
 
-            [Menu("Tower Build Radius", "Max grid distance from pump to consider foundations for building.")]
+            [Menu("Tower Build Radius (grid units)", "Maximum distance in grid units from the pump to consider foundations for building towers.")]
             public RangeNode<float> TowerBuildRadius { get; set; } = new RangeNode<float>(90f, 40f, 200f);
 
-            [Menu("Tower Build Cooldown (ms)", "Min time between starting new tower builds (not clicks).")]
+            [Menu("Tower Build Cooldown (ms)", "Minimum time in milliseconds between starting new tower builds.")]
             public RangeNode<int> TowerBuildCooldownMs { get; set; } = new RangeNode<int>(3000, 500, 10000);
 
-            [Menu("Tower Click Cooldown (ms)", "Min time between individual click actions (label, menu button).")]
+            [Menu("Tower Click Cooldown (ms)", "Minimum time in milliseconds between individual tower UI click actions.")]
             public RangeNode<int> TowerClickCooldownMs { get; set; } = new RangeNode<int>(200, 50, 1000);
 
-            [Menu("Tower Approach Distance", "Navigate this close to towers before clicking — close enough to see full build/upgrade UI (grid units).")]
+            [Menu("Tower Approach Distance (grid units)", "Distance in grid units the bot must walk to a tower before clicking to open its build/upgrade menu.")]
             public RangeNode<float> TowerApproachDistance { get; set; } = new RangeNode<float>(25f, 10f, 60f);
 
-            [Menu("Sweep Delay After Timer (s)", "Wait this long after timer ends before starting sweep (mobs still spawning).")]
+            [Menu("Sweep Delay After Timer (seconds)", "Time in seconds to wait at the pump after the encounter timer ends before starting to sweep for remaining monsters.")]
             public RangeNode<float> SweepDelayAfterTimerSeconds { get; set; } = new RangeNode<float>(30f, 5f, 60f);
 
-            [Menu("Sweep Timeout (s)", "Max time in sweep phase with no monsters found before giving up. Resets when monsters are found or killed.")]
+            [Menu("Sweep Timeout (seconds)", "Maximum time in seconds allowed in the sweep phase without seeing any monsters before giving up and opening chests.")]
             public RangeNode<float> SweepTimeoutSeconds { get; set; } = new RangeNode<float>(180f, 60f, 600f);
 
-            [Menu("Sweep Pump Return (s)", "Max seconds away from pump before forced return — refreshes encounter state and checks for threats from other directions.")]
+            [Menu("Sweep Pump Return (seconds)", "Maximum time in seconds the bot can spend away from the pump during sweep before forcing a return to refresh state and check threats.")]
             public RangeNode<float> SweepPumpReturnSeconds { get; set; } = new RangeNode<float>(30f, 10f, 60f);
 
-            [Menu("Sweep Pump Radius", "Grid distance from pump considered 'near pump' — resets the return timer when inside this radius.")]
+            [Menu("Sweep Pump Radius (grid units)", "Distance in grid units from the pump considered 'near pump' — resets the return timer when inside this area.")]
             public RangeNode<float> SweepPumpRadius { get; set; } = new RangeNode<float>(80f, 30f, 150f);
 
             public TowerTypeSettings Chilling { get; set; } = new TowerTypeSettings(5, canStack: false, tier3Branch: "None");

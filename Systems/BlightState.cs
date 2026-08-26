@@ -48,14 +48,9 @@ namespace AutoExile.Systems
 
         // --- Cached entity data (survives going off-screen) ---
 
-        // Towers: cached with position/type/tier so we can navigate to off-screen towers
         public Dictionary<long, CachedTower> CachedTowers { get; } = new();
         public HashSet<long> FullyUpgradedTowerIds { get; } = new();
-
-        // Foundations: cached with position and built state
         public Dictionary<long, CachedFoundation> CachedFoundations { get; } = new();
-
-        // Monsters: last-known positions, assumed alive until confirmed dead
         public Dictionary<long, CachedMonster> CachedMonsters { get; } = new();
 
         // Legacy accessors (updated via events)
@@ -94,7 +89,7 @@ namespace AutoExile.Systems
         // Internal state
         private bool _wasEncounterActive;
         private bool _wasTimerRunning;
-        private int _timerCheckTicks; // ticks since encounter active without ever seeing timer
+        private int _timerCheckTicks;
         private DateTime _lastThreatUpdateAt = DateTime.MinValue;
         private DateTime _lastCoverageUpdateAt = DateTime.MinValue;
         private DateTime _prevTowerBuildAt = DateTime.MinValue;
@@ -105,10 +100,6 @@ namespace AutoExile.Systems
         // Chest ID→position mapping (needed for removal by event)
         private readonly Dictionary<long, Vector2> _chestEntityPositions = new();
 
-
-        /// <summary>
-        /// Reset all state for a new area/encounter.
-        /// </summary>
         public void Reset()
         {
             PumpPosition = null;
@@ -148,13 +139,6 @@ namespace AutoExile.Systems
             DeathCount = 0;
         }
 
-        // =================================================================
-        // Entity event handlers — called from BotCore.EntityAdded/Removed
-        // =================================================================
-
-        /// <summary>
-        /// Called when an entity enters the client's entity list (spawned or entered render range).
-        /// </summary>
         public void OnEntityAdded(Entity entity)
         {
             if (entity.Path == null) return;
@@ -164,14 +148,14 @@ namespace AutoExile.Systems
             {
                 var pos = entity.GridPosNum;
                 if (PumpPosition.HasValue && Vector2.Distance(pos, PumpPosition.Value) > PumpRejectDistance)
-                    return; // garbage position — reject
+                    return;
                 PumpPosition = pos;
                 PumpEntityId = entity.Id;
                 IsPumpInRange = true;
                 return;
             }
 
-            // Tower (skip target markers — they share the "BlightTower" prefix but aren't real towers)
+            // Tower
             if (entity.Path.Contains("BlightTower") && !entity.Path.Contains("TargetMarker"))
             {
                 var btId = BlightLaneTracker.GetBlightTowerId(entity);
@@ -190,7 +174,6 @@ namespace AutoExile.Systems
                 ct.IsVisible = true;
                 KnownTowerEntityIds.Add(entity.Id);
 
-                // Read radius from game data (Info.Radius is already in grid units)
                 if (entity.TryGetComponent<BlightTower>(out var bt) && bt.Info != null && bt.Info.Radius > 0)
                     ct.Radius = bt.Info.Radius;
 
@@ -209,8 +192,6 @@ namespace AutoExile.Systems
                 cf.Position = entity.GridPosNum;
                 cf.LastSeen = DateTime.Now;
                 cf.IsVisible = true;
-                // Re-entering render range: if it wasn't built before, still not built
-                // (IsBuilt stays true if it was already marked built)
                 if (!cf.IsBuilt)
                     cf.IsBuilt = false;
                 return;
@@ -233,7 +214,7 @@ namespace AutoExile.Systems
                 return;
             }
 
-            // Portal — cache position for exit navigation
+            // Portal
             if (entity.Type == EntityType.TownPortal)
             {
                 PortalPosition = entity.GridPosNum;
@@ -251,7 +232,6 @@ namespace AutoExile.Systems
                 }
                 else
                 {
-                    // Re-entered render range already opened — clean up stale cache
                     ChestPositions.Remove(pos);
                     _chestEntityPositions.Remove(entity.Id);
                 }
@@ -259,23 +239,16 @@ namespace AutoExile.Systems
             }
         }
 
-        /// <summary>
-        /// Called when an entity leaves the client's entity list (destroyed or left render range).
-        /// Uses render-range check to distinguish "truly gone" from "went off-screen".
-        /// playerPos is in grid coordinates.
-        /// </summary>
         public void OnEntityRemoved(Entity entity, Vector2 playerPos)
         {
             var id = entity.Id;
 
-            // Pump
             if (id == PumpEntityId)
             {
                 IsPumpInRange = false;
                 return;
             }
 
-            // Foundation removed: if within render range, it was built (tower replaced it)
             if (CachedFoundations.TryGetValue(id, out var cf))
             {
                 cf.IsVisible = false;
@@ -285,21 +258,18 @@ namespace AutoExile.Systems
                 return;
             }
 
-            // Tower removed
             if (CachedTowers.TryGetValue(id, out var ct))
             {
                 ct.IsVisible = false;
                 KnownTowerEntityIds.Remove(id);
                 if (Vector2.Distance(playerPos, ct.Position) < RenderRange)
                 {
-                    // Close enough to see but gone = destroyed
                     CachedTowers.Remove(id);
                     FullyUpgradedTowerIds.Remove(id);
                 }
                 return;
             }
 
-            // Monster removed: if within render range, confirmed dead
             if (CachedMonsters.TryGetValue(id, out var cm))
             {
                 cm.IsVisible = false;
@@ -308,23 +278,17 @@ namespace AutoExile.Systems
                 return;
             }
 
-            // Chest removed (opened or went off-screen)
             if (_chestEntityPositions.TryGetValue(id, out var chestPos))
             {
                 if (Vector2.Distance(playerPos, chestPos) < RenderRange)
                 {
-                    // Within network bubble = confirmed gone (opened/destroyed)
                     ChestPositions.Remove(chestPos);
                     _chestEntityPositions.Remove(id);
                 }
-                // Beyond range = went off-screen, keep both caches so we can navigate back
                 return;
             }
         }
 
-        /// <summary>
-        /// Populate caches from entities already in the world (call on mode enter).
-        /// </summary>
         public void InitializeFromCurrentEntities(GameController gc)
         {
             foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
@@ -332,11 +296,6 @@ namespace AutoExile.Systems
             UpdateFoundationDebugText();
         }
 
-        /// <summary>
-        /// Actively scan entity list for the pump and read its StateMachine.
-        /// Call each tick during FindPump when PumpPosition is not set — handles re-entry
-        /// after death where EntityAdded events may not re-fire for cached entities.
-        /// </summary>
         public void ScanForPump(GameController gc)
         {
             foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
@@ -352,7 +311,6 @@ namespace AutoExile.Systems
                 PumpEntityId = entity.Id;
                 IsPumpInRange = true;
 
-                // Read StateMachine immediately — don't wait for next Tick()
                 if (entity.TryGetComponent<StateMachine>(out var states))
                 {
                     var activated = GetStateValue(states, "activated");
@@ -371,9 +329,6 @@ namespace AutoExile.Systems
                     }
                 }
 
-                // Fallback: non-targetable pump means the encounter has been activated.
-                // The "activated" StateMachine state may not stay >0 for the entire encounter.
-                // Require sustained non-targetable to avoid transient false positives.
                 if (!IsEncounterActive)
                 {
                     if (!entity.IsTargetable)
@@ -391,13 +346,6 @@ namespace AutoExile.Systems
             }
         }
 
-        // =================================================================
-        // Per-tick updates — dynamic data only
-        // =================================================================
-
-        /// <summary>
-        /// Update dynamic state each tick. Entity lifecycle is handled by events.
-        /// </summary>
         public void Tick(GameController gc)
         {
             UpdateDynamicEntityData(gc);
@@ -409,17 +357,12 @@ namespace AutoExile.Systems
             UpdateFoundationDebugText();
         }
 
-        /// <summary>
-        /// Single pass over visible entities to update dynamic data
-        /// (monster positions, tower tiers, pump StateMachine).
-        /// </summary>
         private void UpdateDynamicEntityData(GameController gc)
         {
             bool prevEncounterActive = IsEncounterActive;
 
             foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
             {
-                // Monster position + alive update
                 if (CachedMonsters.TryGetValue(entity.Id, out var cm))
                 {
                     cm.Position = entity.GridPosNum;
@@ -429,7 +372,6 @@ namespace AutoExile.Systems
                     continue;
                 }
 
-                // Tower tier/radius update (changes on upgrade)
                 if (CachedTowers.TryGetValue(entity.Id, out var ct))
                 {
                     var btId = BlightLaneTracker.GetBlightTowerId(entity);
@@ -444,7 +386,6 @@ namespace AutoExile.Systems
                     continue;
                 }
 
-                // Pump StateMachine
                 if (entity.Id == PumpEntityId)
                 {
                     var pos = entity.GridPosNum;
@@ -458,11 +399,6 @@ namespace AutoExile.Systems
                         if (activated > 0)
                             IsEncounterActive = true;
                     }
-                    // Fallback: non-targetable pump means encounter is active.
-                    // The "activated" state is a trigger that may not stay >0 for the
-                    // entire encounter — once set, IsEncounterActive should never flip back.
-                    // Require sustained non-targetable state to avoid transient false positives
-                    // (e.g., blink animations, entity refresh, momentary targeting loss).
                     if (!IsEncounterActive)
                     {
                         if (!entity.IsTargetable)
@@ -480,7 +416,6 @@ namespace AutoExile.Systems
                 }
             }
 
-            // Clean up opened chests — check all cached chest entities that are still visible
             var staleChestIds = new List<long>();
             foreach (var (id, pos) in _chestEntityPositions)
             {
@@ -494,7 +429,6 @@ namespace AutoExile.Systems
             foreach (var id in staleChestIds)
                 _chestEntityPositions.Remove(id);
 
-            // Track encounter start
             if (IsEncounterActive && !prevEncounterActive)
                 EncounterStartedAt = DateTime.Now;
             _wasEncounterActive = IsEncounterActive;
@@ -545,37 +479,68 @@ namespace AutoExile.Systems
                 CountdownText = "";
             }
 
+            // Fallback search if primary UI index was empty
+            if (string.IsNullOrEmpty(CountdownText))
+            {
+                try
+                {
+                    var ui = gc.IngameState.IngameUi;
+                    var parent = ui.LeagueMechanicButtons?.Parent;
+                    if (parent != null)
+                    {
+                        foreach (var child in parent.Children)
+                        {
+                            if (child?.IsVisible == true && !string.IsNullOrEmpty(child.Text) && child.Text.Contains(':'))
+                            {
+                                var text = child.Text.Trim();
+                                if (text.Length <= 5 && char.IsDigit(text[0]))
+                                {
+                                    CountdownText = text;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
             // Detect timer done — countdown reaching zero
             if (!IsTimerDone && IsEncounterActive)
             {
                 bool timerRunning = !string.IsNullOrEmpty(CountdownText) &&
                     CountdownText.Trim() != "0:00" && CountdownText.Trim() != "00:00";
 
+                if (timerRunning)
+                {
+                    _wasTimerRunning = true;
+                }
+
                 if (_wasTimerRunning && !timerRunning)
                 {
                     IsTimerDone = true;
-                    TimerDoneAt = DateTime.Now;
+                    TimerDoneAt ??= DateTime.Now;
                 }
                 else if (!_wasTimerRunning && !timerRunning)
                 {
-                    // Never saw the timer running — encounter may have been re-entered
-                    // after the timer already ended. Only trigger this fallback after the
-                    // encounter has been active for 5+ seconds, so the countdown UI has
-                    // time to load. Without this guard, a slow UI load on fresh encounters
-                    // causes false "timer done" within 0.5s of encounter start.
                     var encounterAge = EncounterStartedAt.HasValue
                         ? (DateTime.Now - EncounterStartedAt.Value).TotalSeconds : 0;
-                    if (encounterAge > 5)
+
+                    // On re-entry after death (DeathCount > 0), if 5s passed and no timer is running,
+                    // the timer finished while dead in hideout.
+                    // On fresh encounters (DeathCount == 0), wait 360s (6mins) before assuming timer done.
+                    double requiredAge = DeathCount > 0 ? 5.0 : 360.0;
+
+                    if (encounterAge > requiredAge)
                     {
                         _timerCheckTicks++;
-                        if (_timerCheckTicks > 30) // ~0.5s after the 5s grace
+                        if (_timerCheckTicks > 30)
                         {
                             IsTimerDone = true;
-                            TimerDoneAt = DateTime.Now;
+                            TimerDoneAt ??= DateTime.Now;
                         }
                     }
                 }
-                _wasTimerRunning = timerRunning;
             }
         }
 
@@ -584,7 +549,6 @@ namespace AutoExile.Systems
             if (IsEncounterDone) return;
             if (PumpEntityId == 0) return;
 
-            // Find pump by cached ID
             Entity? pump = null;
             foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
             {
@@ -633,18 +597,13 @@ namespace AutoExile.Systems
 
         private void TrackCurrency(GameController gc)
         {
-            // Don't search for blight HUD after encounter is done — UI is gone
             if (IsEncounterDone) return;
 
-            // Blight currency is in the blight HUD overlay.
-            // Path: IngameUi[11][0][3][2][0][1] — sibling of "Pump Durability" at [1].
-            // Try direct path first, fall back to searching for "Pump Durability" landmark.
             var ui = gc.IngameState.IngameUi;
             if (ui == null) return;
 
             try
             {
-                // Direct path — fast. Check child counts before accessing to avoid ExileCore index errors.
                 var c11 = ui.GetChildAtIndex(11);
                 if (c11?.IsVisible == true && c11.ChildCount > 0)
                 {
@@ -666,8 +625,6 @@ namespace AutoExile.Systems
             }
             catch { }
 
-            // Fallback: search top-level children for the blight HUD
-            // Identified by containing a "Pump Durability" label
             try
             {
                 for (int i = 0; i < ui.ChildCount && i < 40; i++)
@@ -681,11 +638,9 @@ namespace AutoExile.Systems
                     var hud = inner.GetChildAtIndex(3);
                     if (hud == null || !hud.IsVisible || hud.ChildCount < 3) continue;
 
-                    // Check for "Pump Durability" landmark at [1][0][0]
                     var durLabel = hud.GetChildFromIndices(1, 0, 0);
                     if (durLabel?.Text == null || !durLabel.Text.Contains("Pump")) continue;
 
-                    // Currency text is at [2][0][1]
                     var textEl = hud.GetChildFromIndices(2, 0, 1);
                     if (textEl != null && TryParseCurrency(textEl.Text, out var val))
                     {
@@ -726,32 +681,27 @@ namespace AutoExile.Systems
             return 0;
         }
 
-        /// <summary>
-        /// Convert a grid position to world coordinates for NavigateTo / WorldToScreen.
-        /// </summary>
         public static Vector2 ToWorld(Vector2 gridPos) => gridPos * Pathfinding.GridToWorld;
         public static Vector3 ToWorld3(Vector2 gridPos, float z = 0) => new(gridPos.X * Pathfinding.GridToWorld, gridPos.Y * Pathfinding.GridToWorld, z);
     }
 
-    // --- Cache data structures (all positions in grid coordinates) ---
-
     public class CachedTower
     {
         public long EntityId;
-        public Vector2 Position;       // grid coords
-        public string? BlightTowerId;  // e.g. "ChillingTower2"
-        public string? TowerType;      // e.g. "Chilling"
+        public Vector2 Position;
+        public string? BlightTowerId;
+        public string? TowerType;
         public int Tier;
-        public float Radius;           // grid units (from BlightTower.Info.Radius)
+        public float Radius;
         public DateTime LastSeen;
-        public bool IsVisible;         // currently in entity list
+        public bool IsVisible;
     }
 
     public class CachedFoundation
     {
         public long EntityId;
-        public Vector2 Position;       // grid coords
-        public bool IsBuilt;           // true when entity removed from within render range
+        public Vector2 Position;
+        public bool IsBuilt;
         public DateTime LastSeen;
         public bool IsVisible;
     }
@@ -759,9 +709,9 @@ namespace AutoExile.Systems
     public class CachedMonster
     {
         public long EntityId;
-        public Vector2 Position;       // grid coords
+        public Vector2 Position;
         public MonsterRarity Rarity;
-        public bool AssumedAlive;      // true until confirmed dead via removal event
+        public bool AssumedAlive;
         public DateTime LastSeen;
         public bool IsVisible;
     }
