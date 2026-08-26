@@ -605,10 +605,10 @@ namespace AutoExile.Systems
             const int mask = unchecked((short)0x8000);
             return (GetAsyncKeyState((int)Keys.LControlKey) & mask) != 0
                 || (GetAsyncKeyState((int)Keys.RControlKey) & mask) != 0
-                || (GetAsyncKeyState((int)Keys.LShiftKey)   & mask) != 0
-                || (GetAsyncKeyState((int)Keys.RShiftKey)   & mask) != 0
-                || (GetAsyncKeyState((int)Keys.LMenu)       & mask) != 0
-                || (GetAsyncKeyState((int)Keys.RMenu)       & mask) != 0;
+                || (GetAsyncKeyState((int)Keys.LShiftKey) & mask) != 0
+                || (GetAsyncKeyState((int)Keys.RShiftKey) & mask) != 0
+                || (GetAsyncKeyState((int)Keys.LMenu) & mask) != 0
+                || (GetAsyncKeyState((int)Keys.RMenu) & mask) != 0;
         }
 
         /// <summary>Force-release any tracked modifier keys AND flush any OS-level
@@ -631,10 +631,10 @@ namespace AutoExile.Systems
             if (!OsHasModifierHeld()) return;
             SendKeyUp(Keys.LControlKey, "movement-guard");
             SendKeyUp(Keys.RControlKey, "movement-guard");
-            SendKeyUp(Keys.LShiftKey,   "movement-guard");
-            SendKeyUp(Keys.RShiftKey,   "movement-guard");
-            SendKeyUp(Keys.LMenu,       "movement-guard");
-            SendKeyUp(Keys.RMenu,       "movement-guard");
+            SendKeyUp(Keys.LShiftKey, "movement-guard");
+            SendKeyUp(Keys.RShiftKey, "movement-guard");
+            SendKeyUp(Keys.LMenu, "movement-guard");
+            SendKeyUp(Keys.RMenu, "movement-guard");
         }
 
         private static void ReleaseTrackedModifiers()
@@ -644,8 +644,8 @@ namespace AutoExile.Systems
             foreach (var k in _heldKeys.Keys)
             {
                 if (k == Keys.LControlKey || k == Keys.RControlKey || k == Keys.ControlKey ||
-                    k == Keys.LShiftKey   || k == Keys.RShiftKey   || k == Keys.ShiftKey   ||
-                    k == Keys.LMenu       || k == Keys.RMenu       || k == Keys.Menu)
+                    k == Keys.LShiftKey || k == Keys.RShiftKey || k == Keys.ShiftKey ||
+                    k == Keys.LMenu || k == Keys.RMenu || k == Keys.Menu)
                     toRelease.Add(k);
             }
             foreach (var k in toRelease)
@@ -667,7 +667,7 @@ namespace AutoExile.Systems
         {
             if (WindowRect.Width < 10 || WindowRect.Height < 10) return absScreenPos;
             var center = new Vector2(
-                WindowRect.X + WindowRect.Width  / 2f,
+                WindowRect.X + WindowRect.Width / 2f,
                 WindowRect.Y + WindowRect.Height / 2f);
             var dir = absScreenPos - center;
             var len = dir.Length();
@@ -854,25 +854,27 @@ namespace AutoExile.Systems
 
         /// <summary>
         /// Tick the movement layer. Call once per frame from BotCore.
-        /// Auto-resumes movement after discrete actions complete.
+        /// Auto-resumes movement after discrete actions (like interspersed attacks) complete.
         /// </summary>
         public static void TickMovementLayer()
         {
             if (!IsMovementActive || !IsMovementSuspended) return;
 
             // Don't resume movement while modifier keys are held (e.g. Ctrl for batch stash transfers).
-            // Resuming would press the movement key with Ctrl still down, sending Ctrl+moveKey.
-            // Held skill keys (channel attacks) are fine — only actual modifiers cause combo issues.
             if (HasHeldModifiers) return;
 
-            // Auto-resume when the discrete action's gate has cleared.
-            // ResumeMovement internally checks CanSendInputEvent for rate limiting.
+            // Auto-resume movement as soon as the discrete attack's gate has cleared.
             if (CanAct)
+            {
                 ResumeMovement();
+                return;
+            }
 
             // Safety: force-resume if suspended too long (action got stuck)
-            if (IsMovementSuspended && (DateTime.Now - _lastInputEvent).TotalMilliseconds > 2000)
+            if (IsMovementSuspended && (DateTime.Now - _lastInputEvent).TotalMilliseconds > 1500)
+            {
                 ResumeMovement();
+            }
         }
 
         // ══════════════════════════════════════════════════════════════

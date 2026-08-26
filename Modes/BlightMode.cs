@@ -42,11 +42,13 @@ namespace AutoExile.Modes
         private const float ChestNavTimeoutSeconds = 30f;
 
         // Sweep state
-        private bool _sweepWasSearching;
-        private DateTime _sweepLastOutsidePumpAt = DateTime.MinValue;
-        private DateTime _sweepLastMonsterSeenAt = DateTime.MinValue;
-        private bool _sweepReturningToPump;
-        // Combat stuck detection (same pattern as SimulacrumMode)
+        private enum SweepSubPhase { PatrolLaneOutward, ReturnToPump }
+        private SweepSubPhase _sweepSubPhase = SweepSubPhase.PatrolLaneOutward;
+        private int _currentPatrolLaneIndex;
+        private readonly HashSet<int> _sweptLaneIndices = new();
+        private DateTime _lanePatrolStartedAt = DateTime.MinValue;
+        private const float LanePatrolTimeoutSeconds = 25f;  // Allow full travel on long lanes
+        private const float EndpointOverlapRadius = 40f;     // Mark overlapping lanes as swept
         private DateTime _sweepCombatEngageTime = DateTime.MinValue;
         private int _sweepCombatEngageCount;
         private const float SweepCombatStuckSeconds = 15f;
@@ -132,7 +134,7 @@ namespace AutoExile.Modes
                 // Combat still scans threats and fires skills — just won't move the player.
                 // Allow combat positioning in Sweep phase or in WaitForCompletion (when StandAtTower is off and no tower action).
                 bool allowCombatMovement = ((_phase == BlightPhase.WaitForCompletion && !_settings.StandAtTower.Value && _towerAction == null)
-                    || (_phase == BlightPhase.Sweep && !_sweepReturningToPump))
+                    || (_phase == BlightPhase.Sweep && _sweepSubPhase != SweepSubPhase.ReturnToPump))
                     && ctx.Combat.NearbyMonsterCount > 0;
                 ctx.Combat.SuppressPositioning = !allowCombatMovement;
 
@@ -807,16 +809,17 @@ namespace AutoExile.Modes
         {
             _phase = BlightPhase.Sweep;
             _phaseStartTime = DateTime.Now;
-            _sweepWasSearching = false;
-            _sweepLastOutsidePumpAt = DateTime.MinValue;
-            _sweepLastMonsterSeenAt = DateTime.Now;
-            _sweepReturningToPump = false;
+            _sweepSubPhase = SweepSubPhase.PatrolLaneOutward;
+            _currentPatrolLaneIndex = 0;
+            _sweptLaneIndices.Clear();
+            _lanePatrolStartedAt = DateTime.Now;
             _sweepCombatEngageTime = DateTime.MinValue;
             _sweepCombatEngageCount = 0;
         }
 
         private void TickSweep(BotContext ctx)
         {
+            // Original completion logic: only advance when the game confirms the encounter is done
             if (_blight.IsEncounterDone)
             {
                 ctx.Navigation.Stop(ctx.Game);
@@ -825,75 +828,17 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Safety guard: if timer is not actually done, abort sweep and return to TowerManagement
-            if (!_blight.IsTimerDone)
-            {
-                ctx.Navigation.Stop(ctx.Game);
-                _phase = BlightPhase.TowerManagement;
-                _phaseStartTime = DateTime.Now;
-                StatusText = "Timer still running — returning to tower management";
-                return;
-            }
-
             var gc = ctx.Game;
             var playerPos = gc.Player.GridPosNum;
             var defensePos = _blight.DefensePosition ?? playerPos;
-            var distToDefense = Vector2.Distance(playerPos, defensePos);
             var now = DateTime.Now;
 
-            var pumpRadius = _settings.SweepPumpRadius.Value;
-            var returnSeconds = _settings.SweepPumpReturnSeconds.Value;
-
-            // --- Track pump proximity timer ---
-            if (distToDefense <= pumpRadius)
-            {
-                _sweepLastOutsidePumpAt = DateTime.MinValue;
-                _sweepReturningToPump = false;
-            }
-            else if (_sweepLastOutsidePumpAt == DateTime.MinValue)
-            {
-                _sweepLastOutsidePumpAt = now;
-            }
-
-            // --- Forced return to pump ---
-            bool awayTooLong = _sweepLastOutsidePumpAt != DateTime.MinValue
-                && (now - _sweepLastOutsidePumpAt).TotalSeconds > returnSeconds;
-
-            if (_sweepReturningToPump || awayTooLong)
-            {
-                _sweepReturningToPump = true;
-                if (distToDefense < 18f)
-                {
-                    _sweepReturningToPump = false;
-                    _sweepLastOutsidePumpAt = DateTime.MinValue;
-                    ctx.Navigation.Stop(gc);
-                    if (ctx.Exploration.IsInitialized)
-                        ctx.Exploration.ResetSeen();
-                    _sweepWasSearching = false;
-                    StatusText = "Returned to pump — resuming sweep";
-                    return;
-                }
-
-                if (!ctx.Navigation.IsNavigating)
-                    ctx.Navigation.NavigateTo(gc, defensePos);
-                StatusText = $"Returning to defense point (dist: {distToDefense:F0})";
-                return;
-            }
-
-            // --- No-monster timeout ---
-            if ((now - _sweepLastMonsterSeenAt).TotalSeconds > _settings.SweepTimeoutSeconds.Value)
-            {
-                ctx.Navigation.Stop(gc);
-                EnterOpenChestsPhase();
-                StatusText = $"Sweep timeout — no monsters for {_settings.SweepTimeoutSeconds.Value:F0}s";
-                return;
-            }
+            // Track any lane endpoints the player passed near during movement
+            MarkLanesNearPlayerAsSwept(playerPos, defensePos);
 
             // --- Priority 1: Fight nearby monsters ---
             if (ctx.Combat.NearbyMonsterCount > 0)
             {
-                _sweepLastMonsterSeenAt = now;
-
                 if (_sweepCombatEngageTime == DateTime.MinValue || ctx.Combat.NearbyMonsterCount < _sweepCombatEngageCount)
                 {
                     _sweepCombatEngageTime = now;
@@ -905,34 +850,19 @@ namespace AutoExile.Modes
                 {
                     _sweepCombatEngageTime = DateTime.MinValue;
                     _sweepCombatEngageCount = 0;
-                    if (!_sweepWasSearching)
-                    {
-                        _sweepWasSearching = true;
-                        if (ctx.Exploration.IsInitialized)
-                            ctx.Exploration.ResetSeen();
-                    }
-                    StatusText = $"Combat stuck ({combatElapsed:F0}s) — moving on ({ctx.Combat.NearbyMonsterCount} unreachable)";
+                    StatusText = $"Combat stuck ({combatElapsed:F0}s) — resuming lane sweep";
                     TickSweepExplore(ctx, playerPos, defensePos);
                 }
                 else
                 {
-                    _sweepWasSearching = false;
                     StatusText = $"Sweep: fighting ({ctx.Combat.NearbyMonsterCount} nearby, {ctx.Combat.CachedMonsterCount} total)";
                 }
                 return;
             }
 
-            // --- Priority 2: Chase cached distant monsters (closest to pump first) ---
+            // --- Priority 2: Chase cached monsters in network bubble (closest to pump first) ---
             if (ctx.Combat.CachedMonsterCount > 0)
             {
-                _sweepLastMonsterSeenAt = now;
-
-                if (!_sweepWasSearching)
-                {
-                    _sweepWasSearching = true;
-                    if (ctx.Exploration.IsInitialized)
-                        ctx.Exploration.ResetSeen();
-                }
                 _sweepCombatEngageTime = DateTime.MinValue;
                 _sweepCombatEngageCount = 0;
 
@@ -947,60 +877,161 @@ namespace AutoExile.Modes
                 }
             }
 
-            // --- Priority 3: Explore for stragglers ---
-            if (!_sweepWasSearching)
-            {
-                _sweepWasSearching = true;
-                if (ctx.Exploration.IsInitialized)
-                    ctx.Exploration.ResetSeen();
-            }
             _sweepCombatEngageTime = DateTime.MinValue;
             _sweepCombatEngageCount = 0;
 
+            // --- Priority 3: Full Lane Patrol State Machine ---
             TickSweepExplore(ctx, playerPos, defensePos);
         }
 
+
+        /// <summary>
+        /// Patrols each Blight lane to its absolute spawn endpoint, returns to defend the pump,
+        /// and advances to the next lane while deduplicating overlapping endpoints.
+        /// </summary>
         private void TickSweepExplore(BotContext ctx, Vector2 playerPos, Vector2 defensePos)
         {
             var gc = ctx.Game;
+            var now = DateTime.Now;
+            var laneTracker = _blight.LaneTracker;
 
-            if (ctx.Navigation.IsNavigating)
+            // Fallback: If no lane data exists, use exploration map
+            if (!laneTracker.HasLaneData || laneTracker.Lanes.Count == 0)
             {
-                StatusText = $"Sweep: searching for monsters ({ctx.Combat.CachedMonsterCount} alive)";
+                if (ctx.Exploration.IsInitialized)
+                {
+                    if (ctx.Exploration.ActiveBlobCoverage >= 0.95f)
+                    {
+                        ctx.Exploration.SeenRadiusOverride = 40;
+                        ctx.Exploration.ResetSeen();
+                    }
+
+                    var target = ctx.Exploration.GetNextExplorationTarget(playerPos);
+                    if (target.HasValue)
+                    {
+                        ctx.Navigation.NavigateTo(gc, target.Value);
+                        StatusText = $"Sweep: exploring map ({ctx.Combat.CachedMonsterCount} alive)";
+                        return;
+                    }
+                }
                 return;
             }
 
-            if (ctx.Exploration.IsInitialized)
+            // Reset cycle if all lanes have been swept
+            if (_sweptLaneIndices.Count >= laneTracker.Lanes.Count)
             {
-                var target = ctx.Exploration.GetNextExplorationTarget(playerPos);
-                if (target.HasValue)
-                {
-                    ctx.Navigation.NavigateTo(gc, target.Value);
-                    StatusText = $"Sweep: exploring for monsters ({ctx.Combat.CachedMonsterCount} alive)";
-                    return;
-                }
+                _sweptLaneIndices.Clear();
             }
 
-            if (_blight.DefensePosition.HasValue)
+            bool laneTimedOut = _lanePatrolStartedAt != DateTime.MinValue
+                && (now - _lanePatrolStartedAt).TotalSeconds > LanePatrolTimeoutSeconds;
+
+            // --- SubPhase 1: Patrol outward to the end of the lane ---
+            if (_sweepSubPhase == SweepSubPhase.PatrolLaneOutward)
             {
-                var distOrbit = Vector2.Distance(playerPos, defensePos);
-                if (distOrbit > 60f)
+                // Find next unswept lane
+                while (_sweptLaneIndices.Contains(_currentPatrolLaneIndex) && _sweptLaneIndices.Count < laneTracker.Lanes.Count)
+                {
+                    _currentPatrolLaneIndex = (_currentPatrolLaneIndex + 1) % laneTracker.Lanes.Count;
+                }
+
+                var lane = laneTracker.Lanes[_currentPatrolLaneIndex];
+                var furthestEndpoint = GetLaneFurthestEndpoint(lane, defensePos);
+                var distToEndpoint = Vector2.Distance(playerPos, furthestEndpoint);
+
+                // Arrived at portal endpoint or timed out -> mark swept & return to pump
+                if (distToEndpoint < 25f || laneTimedOut)
+                {
+                    MarkLanesNearPositionAsSwept(furthestEndpoint, defensePos);
+                    _sweepSubPhase = SweepSubPhase.ReturnToPump;
+                    _lanePatrolStartedAt = now;
+                    ctx.Navigation.Stop(gc);
+                    StatusText = $"Sweep: reached lane {_currentPatrolLaneIndex + 1} portal — returning to pump";
+                    return;
+                }
+
+                if (!ctx.Navigation.IsNavigating || Vector2.Distance(ctx.Navigation.Destination ?? Vector2.Zero, furthestEndpoint) > 20f)
+                {
+                    var pathFound = ctx.Navigation.NavigateTo(gc, furthestEndpoint);
+                    if (!pathFound)
+                    {
+                        var walkableEndpoint = ctx.Navigation.FindNearestWalkable(gc, furthestEndpoint, 20);
+                        if (walkableEndpoint.HasValue)
+                            pathFound = ctx.Navigation.NavigateTo(gc, walkableEndpoint.Value);
+                    }
+
+                    if (!pathFound)
+                    {
+                        // Endpoint unreachable — mark swept and return to pump
+                        _sweptLaneIndices.Add(_currentPatrolLaneIndex);
+                        _sweepSubPhase = SweepSubPhase.ReturnToPump;
+                        _lanePatrolStartedAt = now;
+                        StatusText = $"Sweep: lane {_currentPatrolLaneIndex + 1} unreachable — returning to pump";
+                        return;
+                    }
+                }
+                StatusText = $"Sweep: traversing lane {_currentPatrolLaneIndex + 1}/{laneTracker.Lanes.Count} to portal (dist: {distToEndpoint:F0})";
+            }
+            // --- SubPhase 2: Return to defend pump before next lane ---
+            else if (_sweepSubPhase == SweepSubPhase.ReturnToPump)
+            {
+                var distToPump = Vector2.Distance(playerPos, defensePos);
+
+                // Arrived at pump or timed out -> start next lane outward
+                if (distToPump < 20f || laneTimedOut)
+                {
+                    _currentPatrolLaneIndex = (_currentPatrolLaneIndex + 1) % laneTracker.Lanes.Count;
+                    _sweepSubPhase = SweepSubPhase.PatrolLaneOutward;
+                    _lanePatrolStartedAt = now;
+                    ctx.Navigation.Stop(gc);
+                    StatusText = "Sweep: defended pump — traversing next lane";
+                    return;
+                }
+
+                if (!ctx.Navigation.IsNavigating)
                 {
                     ctx.Navigation.NavigateTo(gc, defensePos);
-                    StatusText = $"Sweep: returning to defense point (exploration exhausted, dist: {distOrbit:F0})";
-                    return;
                 }
-                if (distOrbit < 30f)
+                StatusText = $"Sweep: returning to defend pump (dist: {distToPump:F0})";
+            }
+        }
+
+        private static Vector2 GetLaneFurthestEndpoint(List<Vector2> lane, Vector2 defensePos)
+        {
+            if (lane.Count == 0) return defensePos;
+            Vector2 furthest = lane[0];
+            float maxD = 0f;
+            foreach (var wp in lane)
+            {
+                float d = Vector2.Distance(wp, defensePos);
+                if (d > maxD)
                 {
-                    var angle = (float)(DateTime.Now.Ticks % 6283) / 1000f;
-                    var orbitTarget = defensePos + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * 50f;
-                    ctx.Navigation.NavigateTo(gc, orbitTarget);
-                    StatusText = $"Sweep: orbiting defense point ({ctx.Combat.CachedMonsterCount} alive)";
-                    return;
+                    maxD = d;
+                    furthest = wp;
                 }
             }
+            return furthest;
+        }
 
-            StatusText = $"Sweep: searching (no targets, {ctx.Combat.CachedMonsterCount} alive)";
+        private void MarkLanesNearPlayerAsSwept(Vector2 playerPos, Vector2 defensePos)
+        {
+            MarkLanesNearPositionAsSwept(playerPos, defensePos);
+        }
+
+        private void MarkLanesNearPositionAsSwept(Vector2 position, Vector2 defensePos)
+        {
+            var laneTracker = _blight.LaneTracker;
+            if (!laneTracker.HasLaneData) return;
+
+            for (int i = 0; i < laneTracker.Lanes.Count; i++)
+            {
+                if (_sweptLaneIndices.Contains(i)) continue;
+                var endpoint = GetLaneFurthestEndpoint(laneTracker.Lanes[i], defensePos);
+                if (Vector2.Distance(position, endpoint) <= EndpointOverlapRadius)
+                {
+                    _sweptLaneIndices.Add(i);
+                }
+            }
         }
 
         private static Vector2? FindMonsterClosestToDefense(GameController gc, Vector2 defensePos, HashSet<string> enemyBlacklist)
@@ -1186,9 +1217,13 @@ namespace AutoExile.Modes
         {
             _phase = BlightPhase.ExitMap;
             _phaseStartTime = DateTime.Now;
+            _lastActionTime = DateTime.MinValue;
             _mapCompleted = true;
             _blight.MapComplete = true;
             ctx.LootTracker.RecordMapComplete();
+            ctx.Interaction.Cancel(ctx.Game);
+            ctx.Navigation.Stop(ctx.Game);
+
             StatusText = "Exiting map via portal";
         }
 
@@ -1196,8 +1231,11 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            if (gc.Area.CurrentArea.IsHideout)
+            if (gc.IsLoading || gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown)
+            {
+                StatusText = "Loading hideout...";
                 return;
+            }
 
             if ((DateTime.Now - _phaseStartTime).TotalSeconds > 60)
             {
@@ -1206,14 +1244,21 @@ namespace AutoExile.Modes
                 return;
             }
 
-            if (ctx.Interaction.IsBusy)
+            if (!ModeHelpers.CanAct(_lastActionTime, MajorActionCooldownMs))
+                return;
+
+            if (gc.IngameState.IngameUi.StashElement?.IsVisible == true ||
+                gc.IngameState.IngameUi.InventoryPanel?.IsVisible == true)
             {
-                StatusText = $"Clicking portal to exit";
+                BotInput.PressKey(System.Windows.Forms.Keys.Escape);
+                _lastActionTime = DateTime.Now;
+                StatusText = "Closing panels before exit";
                 return;
             }
 
-            Entity? portal = ModeHelpers.FindNearestPortal(gc);
             var playerPos = gc.Player.GridPosNum;
+
+            Entity? portal = ModeHelpers.FindNearestPortal(gc);
 
             if (portal != null)
             {
@@ -1228,8 +1273,10 @@ namespace AutoExile.Modes
                     return;
                 }
 
-                ctx.Navigation.Stop(gc);
-                ctx.Interaction.InteractWithEntity(portal, ctx.Navigation);
+                if (ctx.Navigation.IsNavigating)
+                    ctx.Navigation.Stop(gc);
+
+                ModeHelpers.ClickEntity(gc, portal, ref _lastActionTime);
                 StatusText = "Clicking portal to exit";
                 return;
             }
@@ -1407,12 +1454,8 @@ namespace AutoExile.Modes
 
             if (_phase == BlightPhase.Sweep)
             {
-                var awayTime = _sweepLastOutsidePumpAt != DateTime.MinValue
-                    ? $", away {(DateTime.Now - _sweepLastOutsidePumpAt).TotalSeconds:F0}s/{_settings.SweepPumpReturnSeconds.Value:F0}s"
-                    : "";
-                var noMonsterTime = (DateTime.Now - _sweepLastMonsterSeenAt).TotalSeconds;
-                var sweepInfo = $"Sweep: {ctx.Combat.NearbyMonsterCount} nearby, {ctx.Combat.CachedMonsterCount} cached{awayTime}"
-                    + (noMonsterTime > 5 ? $", no monsters {noMonsterTime:F0}s" : "");
+                var laneCount = _blight.LaneTracker.Lanes.Count;
+                var sweepInfo = $"Sweep: {_sweepSubPhase} | Lane {_currentPatrolLaneIndex + 1}/{laneCount} ({_sweptLaneIndices.Count} swept) | {ctx.Combat.NearbyMonsterCount} nearby";
                 g.DrawText(sweepInfo, new Vector2(hudX, hudY), SharpDX.Color.Orange);
                 hudY += lineH;
             }

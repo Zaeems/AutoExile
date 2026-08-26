@@ -155,11 +155,25 @@ namespace AutoExile
             [Menu("Path Merge Threshold", "Merge consecutive walk waypoints closer than this (grid units). Reduces micro-stutter on stairs/gradients. 0 = disabled. Higher = smoother but may clip tight corners.")]
             public RangeNode<int> PathMergeThreshold { get; set; } = new RangeNode<int>(8, 0, 20);
 
+            // ── Periodic Combat Repositioning ──
+
+            [Menu("Enable Periodic Repositioning", "Periodically step to a new position during combat to avoid ground degens, Delirium pods, and corpse explosions.")]
+            public ToggleNode EnablePeriodicReposition { get; set; } = new ToggleNode(true);
+
+            [Menu("Reposition Interval (ms)", "How often in milliseconds to step to a new spot during combat.")]
+            public RangeNode<int> PeriodicRepositionIntervalMs { get; set; } = new RangeNode<int>(2500, 1000, 5000);
+
+            [Menu("Reposition Distance", "Distance in grid units to step when repositioning.")]
+            public RangeNode<float> PeriodicRepositionDistance { get; set; } = new RangeNode<float>(18f, 10f, 30f);
+
             // ── Skill Slots ──
             // Configure each skill on your bar: what key it's bound to, what role it plays,
             // and its priority (higher = checked first during combat).
             // One slot should be PrimaryMovement (your Move Only key).
             // Movement skills (dash/blink) use the MovementSkill role.
+
+            [Menu("Always Attack", "Continuously attack any nearby enemy without strict line-of-sight requirements. Uses movement skills (Blink/Dash) to move.")]
+            public ToggleNode AlwaysAttack { get; set; } = new ToggleNode(true);
 
             public SkillSlotConfig Skill1 { get; set; } = new SkillSlotConfig(Keys.T, SkillRole.PrimaryMovement);
             public SkillSlotConfig Skill2 { get; set; } = new SkillSlotConfig(Keys.Q);

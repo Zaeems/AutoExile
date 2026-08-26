@@ -424,7 +424,9 @@ namespace AutoExile.Systems
             // Get current waypoint and determine action
             var waypoint = CurrentNavPath[CurrentWaypointIndex];
             var windowRect = gc.Window.GetWindowRectangle();
-            bool inTown = gc.Area?.CurrentArea?.IsTown == true;
+            bool inTown = gc.Area?.CurrentArea?.IsTown == true
+                || gc.Area?.CurrentArea?.IsHideout == true
+                || gc.Area?.CurrentArea?.Name == "The Rogue Harbour";
 
             if (waypoint.Action == WaypointAction.Blink && !inTown)
             {
@@ -582,9 +584,7 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
-        /// Use a movement skill to speed up travel when the path ahead is long and straight.
-        /// Measures distance from PLAYER through remaining waypoints (not just waypoint-to-waypoint).
-        /// All distance calculations in grid units.
+        /// Use a movement skill to speed up travel when the path ahead is long, straight, and has wide walkable clearance.
         /// </summary>
         private bool TryDashForSpeed(GameController gc, Vector2 playerGrid,
             SharpDX.RectangleF windowRect)
@@ -657,7 +657,13 @@ namespace AutoExile.Systems
             if (straightDist < DashMinDistance)
                 return false;
 
-            // Find a movement skill to use.
+            // Verify the path ahead has clear walkable LOS (not a narrow bridge/stairs that clips colliders)
+            var aimTarget = playerGrid + travelDir * DashMinDistance;
+            var pfGrid = gc.IngameState.Data.RawFramePathfindingData;
+            if (pfGrid == null || !Pathfinding.HasLineOfSight(pfGrid, playerGrid, aimTarget))
+                return false;
+
+            // Find a movement skill to use
             MovementSkillInfo? dashSkill = null;
             foreach (var ms in MovementSkills)
             {
@@ -678,10 +684,7 @@ namespace AutoExile.Systems
             if (dashSkill == null)
                 return false;
 
-            // Aim along the travel direction (grid coords → screen)
-            var aimTarget = playerGrid + travelDir * DashMinDistance;
             var aimScreen = GridToScreen(gc, aimTarget);
-
             if (aimScreen.X <= 0 || aimScreen.X >= windowRect.Width ||
                 aimScreen.Y <= 0 || aimScreen.Y >= windowRect.Height)
                 return false;
@@ -1150,7 +1153,11 @@ namespace AutoExile.Systems
             var windowRect = gc.Window.GetWindowRectangle();
 
             // Try movement skills for speed if distance is long enough (needs action gate)
-            if (BotInput.CanAct && TryDirectDash(gc, playerGrid, gridTarget, windowRect))
+            bool inSafeZone = gc.Area?.CurrentArea?.IsTown == true
+                || gc.Area?.CurrentArea?.Name == "The Rogue Harbour";
+
+            // Only try movement skills in skill-enabled zones
+            if (!inSafeZone && !WalkOnly && BotInput.CanAct && TryDirectDash(gc, playerGrid, gridTarget, windowRect))
                 return true;
 
             // Continuous movement doesn't need the action gate

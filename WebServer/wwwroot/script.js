@@ -95,6 +95,16 @@ function updateDashboard(s) {
         $('bossChaosHr').textContent = s.bossChaosPerHour > 0 ? Math.round(s.bossChaosPerHour) + 'c' : '0';
     }
 
+    toggle('heistCard', s.mode === 'Heist');
+    if (s.mode === 'Heist') {
+        $('heistPhase').textContent = s.phase || s.heistPhase || '-';
+        const alertVal = s.heistAlertPercent != null ? s.heistAlertPercent : 0;
+        $('heistAlert').textContent = `${alertVal.toFixed(0)}%`;
+        $('heistLockdown').textContent = s.heistLockdown ? 'LOCKDOWN' : 'Normal';
+        $('heistLockdown').className = 'stat-value ' + (s.heistLockdown ? 'red' : 'green');
+        $('heistTarget').textContent = s.heistTarget || s.decision || '--';
+    }
+
     const farmCard = $('farmCard');
     toggle(farmCard, s.mode === 'Wave Farming');
     if (s.mode === 'Wave Farming') {
@@ -111,7 +121,7 @@ function updateDashboard(s) {
         }
     }
 
-    toggle('explorationCard', !['Simulacrum', 'Follower', 'Idle'].includes(s.mode));
+    toggle('explorationCard', !['Simulacrum', 'Follower', 'Idle', 'Heist'].includes(s.mode));
     toggle('statMapsDone', s.mode === 'Wave Farming');
     toggle('labGemCard', s.mode === 'Labyrinth');
 
@@ -121,7 +131,7 @@ function updateDashboard(s) {
 
     if (s.mode && s.mode !== currentBotMode) {
         currentBotMode = s.mode;
-        $('modeTabLabel').textContent = s.mode === 'Idle' ? 'Mode' : s.mode;
+        $('modeTabLabel').textContent = s.mode === 'Idle' ? 'Mode' : currentBotMode;
         if (settingsLoaded && activeSettingsTab === 'mode') {
             const modeTab = $('stab-mode');
             if (modeTab) { modeTab.innerHTML = ''; renderModeTab(modeTab, currentBotMode); }
@@ -1051,8 +1061,15 @@ function renderAllSettings() {
     c.appendChild(modeTab);
 
     const build = makeTabContent('build', activeSettingsTab === 'build');
-    addSection(build, 'Movement', [['build.blinkRange'], ['build.dashMinDistance', '0 = disable dash-for-speed'], ['build.pathMergeThreshold', '0 = disabled']]);
-    addSection(build, 'Combat', [['build.defaultPositioning'], ['build.fightRange'], ['build.combatRange'], ['build.guardHpThreshold'], ['build.guardEsThreshold'], ['build.vaalMinMonsters'], ['build.summonExpectedCount']]);
+    addSection(build, 'Movement', [
+        ['build.blinkRange'],
+        ['build.dashMinDistance', '0 = disable dash-for-speed'],
+        ['build.pathMergeThreshold', '0 = disabled'],
+        ['build.enablePeriodicReposition'],
+        { key: 'build.periodicRepositionIntervalMs', showIf: 'build.enablePeriodicReposition' },
+        { key: 'build.periodicRepositionDistance', showIf: 'build.enablePeriodicReposition' }
+    ]);
+    addSection(build, 'Combat', [['build.alwaysAttack'], ['build.defaultPositioning'], ['build.fightRange'], ['build.combatRange'], ['build.guardHpThreshold'], ['build.guardEsThreshold'], ['build.vaalMinMonsters'], ['build.summonExpectedCount']]);
     build.appendChild(buildEnemyBlacklist());
     build.appendChild(renderSkillsSection());
     addSection(build, 'Flasks', [['build.flasksEnabled'], ['build.lifeFlaskSlot', '0 = disabled'], ['build.lifeFlaskHpThreshold'], ['build.manaFlaskSlot', '0 = disabled'], ['build.manaFlaskManaThreshold'], ['build.utilityFlaskIntervalMs']]);

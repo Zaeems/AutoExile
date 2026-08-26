@@ -279,7 +279,7 @@ namespace AutoExile.WebServer
                     case "/favicon.ico":
                         resp.StatusCode = 204;
                         break;
-                        
+
                     // Status
                     case "/api/status" when method == "GET":
                         await ServeJson(resp, _currentStatus);
@@ -1159,6 +1159,12 @@ namespace AutoExile.WebServer
         public int LabGemsTransformed { get; init; }
         public float LabTotalProfit { get; init; }
         public string LabSelectedGem { get; init; } = "";
+
+        // Heist stats
+        public float HeistAlertPercent { get; init; }
+        public bool HeistLockdown { get; init; }
+        public string HeistPhase { get; init; } = "";
+        public string HeistTarget { get; init; } = "";
 
         public long Timestamp { get; init; }
 
