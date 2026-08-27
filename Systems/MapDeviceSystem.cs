@@ -546,11 +546,12 @@ namespace AutoExile.Systems
             return MapDeviceResult.InProgress;
         }
 
+        private DateTime _lastSearchPastedAt = DateTime.MinValue;
+        private string _lastSearchedMapName = "";
+
         /// <summary>
-        /// Find and click the atlas node for the target map name.
-        /// Uses AtlasNodes file index + 2 to find the UI element.
-        /// For special maps not in AtlasNodes (e.g., Simulacrum), falls back to
-        /// right-clicking a matching fragment from the stash to auto-select the node.
+        /// Search for the target map on the Atlas, find the node whose Tooltip/Entity matches
+        /// the exact map name (e.g. "Jungle Valley"), and click it.
         /// </summary>
         private MapDeviceResult TickSelectAtlasNode(GameController gc, Element atlas)
         {
@@ -561,122 +562,198 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // Try standard AtlasNodes name lookup. The web UI prefixes "supported"
-            // map names with "★ " as a visual marker — the game files return the
-            // bare name, so we strip the marker before comparing.
-            var lookupName = StripMapPrefix(TargetMapName);
-            var nodes = gc.Files?.AtlasNodes?.EntriesList;
-            int nodeIndex = -1;
-            if (nodes != null)
+            if (!CanAct()) return MapDeviceResult.InProgress;
+
+            var cleanTargetName = StripMapPrefix(TargetMapName) ?? "";
+            var canvas = atlas.GetChildAtIndex(0);
+            if (canvas == null)
             {
-                for (int i = 0; i < Math.Min(nodes.Count, 110); i++)
+                Status = "[Select] Atlas canvas not found";
+                return MapDeviceResult.InProgress;
+            }
+
+            var windowRect = gc.Window.GetWindowRectangle();
+
+            // ── Step 1: Find node by exact Tooltip text or Entity path ──
+            var targetNode = FindTargetMapNode(canvas, cleanTargetName);
+
+            // ── Step 2: If found on screen, click it directly ───────────
+            if (targetNode != null)
+            {
+                var rect = targetNode.GetClientRect();
+                var clickPos = new Vector2(windowRect.X + rect.Center.X, windowRect.Y + rect.Center.Y);
+
+                // Verify the node is within screen bounds
+                if (rect.Center.X > 20 && rect.Center.X < windowRect.Width - 20 &&
+                    rect.Center.Y > 20 && rect.Center.Y < windowRect.Height - 50)
                 {
-                    var name = nodes[i].Area?.Name;
-                    if (name != null && name.Equals(lookupName, StringComparison.OrdinalIgnoreCase))
+                    if (BotInput.Click(clickPos))
                     {
-                        nodeIndex = i;
-                        break;
+                        _lastActionTime = DateTime.Now;
+                        _nodeClickAttempts++;
+                        Status = $"[Select] Clicked '{cleanTargetName}' node (attempt {_nodeClickAttempts})";
+                    }
+                    return MapDeviceResult.InProgress;
+                }
+            }
+
+            // ── Step 3: If not found or off-screen, search via Ctrl+F to center/highlight ──
+            if (_lastSearchedMapName != cleanTargetName || (DateTime.Now - _lastSearchPastedAt).TotalSeconds > 4.0)
+            {
+                try
+                {
+                    ImGuiNET.ImGui.SetClipboardText(cleanTargetName);
+
+                    // Ctrl + F
+                    ExileCore.Input.KeyDown(Keys.ControlKey);
+                    ExileCore.Input.KeyDown(Keys.F);
+                    ExileCore.Input.KeyUp(Keys.F);
+
+                    // Ctrl + A
+                    ExileCore.Input.KeyDown(Keys.A);
+                    ExileCore.Input.KeyUp(Keys.A);
+
+                    // Ctrl + V
+                    ExileCore.Input.KeyDown(Keys.V);
+                    ExileCore.Input.KeyUp(Keys.V);
+
+                    // Release Control
+                    ExileCore.Input.KeyUp(Keys.ControlKey);
+
+                    // Enter
+                    ExileCore.Input.KeyDown(Keys.Enter);
+                    ExileCore.Input.KeyUp(Keys.Enter);
+
+                    _lastSearchedMapName = cleanTargetName;
+                    _lastSearchPastedAt = DateTime.Now;
+                    _lastActionTime = DateTime.Now;
+                    Status = $"[Select] Searched Atlas for '{cleanTargetName}'";
+                    return MapDeviceResult.InProgress;
+                }
+                catch (Exception ex)
+                {
+                    Status = $"[Select] Search error: {ex.Message}";
+                    return MapDeviceResult.InProgress;
+                }
+            }
+
+            Status = $"[Select] Searching Atlas for '{cleanTargetName}'...";
+            return MapDeviceResult.InProgress;
+        }
+
+        /// <summary>
+        /// Scan canvas elements to find the node whose Tooltip or Entity matches target map name.
+        /// </summary>
+        private static Element? FindTargetMapNode(Element canvas, string targetMapName)
+        {
+            if (canvas == null) return null;
+
+            var cleanNameNoSpaces = targetMapName.Replace(" ", "");
+
+            for (int i = 0; i < canvas.ChildCount; i++)
+            {
+                var child = canvas.GetChildAtIndex(i);
+                if (child == null || !child.IsVisible) continue;
+
+                // 1. Check Tooltip (contains "Jungle Valley Map", "Tier 16", etc.)
+                if (child.Tooltip != null && TooltipMatchesMap(child.Tooltip, targetMapName))
+                {
+                    return child;
+                }
+
+                // 2. Check Entity path / metadata (e.g. ".../JungleValley")
+                try
+                {
+                    var entity = child.Entity;
+                    if (entity != null)
+                    {
+                        if (!string.IsNullOrEmpty(entity.RenderName) &&
+                            entity.RenderName.Contains(targetMapName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return child;
+                        }
+                        if (!string.IsNullOrEmpty(entity.Path) &&
+                            entity.Path.Contains(cleanNameNoSpaces, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return child;
+                        }
                     }
                 }
+                catch { }
             }
 
-            if (nodeIndex >= 0)
+            return null;
+        }
+
+        /// <summary>
+        /// Recursively inspect Tooltip element and its children for map name.
+        /// </summary>
+        private static bool TooltipMatchesMap(Element? tooltip, string targetMapName)
+        {
+            if (tooltip == null) return false;
+
+            if (!string.IsNullOrEmpty(tooltip.Text) &&
+                tooltip.Text.Contains(targetMapName, StringComparison.OrdinalIgnoreCase))
             {
-                // Found in AtlasNodes — click the canvas node directly
-                var canvas = atlas.GetChildAtIndex(0);
-                if (canvas == null)
-                {
-                    Status = "[Select] Atlas canvas not found";
-                    return MapDeviceResult.InProgress;
-                }
-
-                var uiIndex = nodeIndex + 2;
-                if (uiIndex >= canvas.ChildCount)
-                {
-                    Status = $"[Select] Atlas node UI index {uiIndex} out of range ({canvas.ChildCount} children)";
-                    _phase = MapDevicePhase.Idle;
-                    return MapDeviceResult.Failed;
-                }
-
-                var nodeElement = canvas.GetChildAtIndex(uiIndex);
-                if (nodeElement == null)
-                {
-                    Status = $"[Select] Atlas node element is null at index {uiIndex}";
-                    return MapDeviceResult.InProgress;
-                }
-
-                // Check if node is on screen
-                var nodeRect = nodeElement.GetClientRect();
-                var nodeCenter = new Vector2(nodeRect.Center.X, nodeRect.Center.Y);
-                var windowRect = gc.Window.GetWindowRectangle();
-
-                if (nodeCenter.X < 0 || nodeCenter.X > windowRect.Width ||
-                    nodeCenter.Y < 0 || nodeCenter.Y > windowRect.Height)
-                {
-                    Status = $"[Select] {TargetMapName} node is off-screen — center atlas on the map first";
-                    _phase = MapDevicePhase.Idle;
-                    return MapDeviceResult.Failed;
-                }
-
-                var absPos = new Vector2(windowRect.X + nodeCenter.X, windowRect.Y + nodeCenter.Y);
-                if (!BotInput.Click(absPos))
-                    return MapDeviceResult.InProgress;
-
-                _lastActionTime = DateTime.Now;
-                _nodeClickAttempts++;
-                Status = $"[Select] Clicking {TargetMapName} node (attempt {_nodeClickAttempts})";
-                return MapDeviceResult.InProgress;
+                return true;
             }
 
-            // Not in AtlasNodes (special map like Simulacrum) — right-click a matching
-            // fragment from the stash to auto-select the correct atlas node.
-            if (_mapFilter == null)
+            for (int i = 0; i < tooltip.ChildCount; i++)
             {
-                Status = $"[Select] Map '{TargetMapName}' not found in AtlasNodes and no map filter set";
-                _phase = MapDevicePhase.Idle;
-                return MapDeviceResult.Failed;
-            }
-
-            // Longer cooldown for right-click selection — game needs time to open the device panel
-            const float RightClickSelectCooldownMs = 1500;
-            if ((DateTime.Now - _lastActionTime).TotalMilliseconds < RightClickSelectCooldownMs)
-            {
-                Status = $"[Select] Waiting for device panel after right-click ({_nodeClickAttempts}/{MaxClickAttempts})";
-                return MapDeviceResult.InProgress;
-            }
-
-            var mapStash = atlas.GetChildFromIndices(MapStashPath);
-            if (mapStash == null)
-            {
-                Status = "[Select] Map stash not found for right-click select";
-                _phase = MapDevicePhase.Idle;
-                return MapDeviceResult.Failed;
-            }
-
-            for (int i = 0; i < mapStash.ChildCount; i++)
-            {
-                var item = mapStash.GetChildAtIndex(i);
-                if (item == null || item.Type != ElementType.InventoryItem)
-                    continue;
-                if (!_mapFilter(item))
-                    continue;
-
-                var rect = item.GetClientRect();
-                var windowRect2 = gc.Window.GetWindowRectangle();
-                var clickPos = BotInput.RandomizeWithinRect(rect);
-                var absPos2 = new Vector2(windowRect2.X + clickPos.X, windowRect2.Y + clickPos.Y);
-                if (BotInput.RightClick(absPos2))
+                var child = tooltip.GetChildAtIndex(i);
+                if (child != null && TooltipMatchesMap(child, targetMapName))
                 {
-                    _lastActionTime = DateTime.Now;
-                    _nodeClickAttempts++;
-                    Status = $"[Select] Right-clicking fragment to select {TargetMapName} (attempt {_nodeClickAttempts})";
+                    return true;
                 }
-                return MapDeviceResult.InProgress;
             }
 
-            Status = $"[Select] No matching fragments in stash to select {TargetMapName}";
-            _phase = MapDevicePhase.Idle;
-            return MapDeviceResult.Failed;
+            return false;
+        }
+
+        private static string GetElementTextRecursive(Element? el)
+        {
+            if (el == null) return "";
+            var sb = new System.Text.StringBuilder();
+            if (!string.IsNullOrEmpty(el.Text))
+                sb.Append(el.Text).Append(' ');
+            for (int i = 0; i < el.ChildCount; i++)
+            {
+                var child = el.GetChildAtIndex(i);
+                if (child != null)
+                    sb.Append(GetElementTextRecursive(child)).Append(' ');
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Recursively scan Atlas canvas elements to locate the node matching target map name.
+        /// </summary>
+        private static Element? FindNodeByName(Element? parent, string targetName, SharpDX.RectangleF windowRect)
+        {
+            if (parent == null) return null;
+
+            // Direct text match on this element
+            if (!string.IsNullOrEmpty(parent.Text) && parent.Text.Contains(targetName, StringComparison.OrdinalIgnoreCase))
+            {
+                var rect = parent.GetClientRect();
+                if (rect.Center.X > 50 && rect.Center.X < windowRect.Width - 50 &&
+                    rect.Center.Y > 50 && rect.Center.Y < windowRect.Height - 50)
+                {
+                    return parent;
+                }
+            }
+
+            // Check children
+            for (int i = 0; i < parent.ChildCount; i++)
+            {
+                var child = parent.GetChildAtIndex(i);
+                if (child == null || !child.IsVisible) continue;
+
+                var found = FindNodeByName(child, targetName, windowRect);
+                if (found != null) return found;
+            }
+
+            return null;
         }
 
         // --- Phase: Click activate ---

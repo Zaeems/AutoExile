@@ -464,14 +464,9 @@ namespace AutoExile.Systems
                 return StashResult.Failed;
             }
 
-            // Wait for any in-flight batch to complete before evaluating again.
-            // The batch holds Ctrl down across all clicks; we don't want to start a
-            // second batch while one is mid-flight or it'll race with Ctrl release.
             if (BotInput.IsBatchRunning)
                 return StashResult.InProgress;
 
-            // Resolve the current target — either WithdrawList[index] (multi-item)
-            // or the legacy single-item path. The two are mutually exclusive at Start().
             string? currentPath;
             int wantTotal;
             if (WithdrawList.Count > 0)
@@ -496,9 +491,6 @@ namespace AutoExile.Systems
                 return StashResult.InProgress;
             }
 
-            // Inventory-aware stopping — bail when we have enough. Handles BOTH
-            // stackable items (one ctrl+click transfers the whole stack) and
-            // non-stackable items (one ctrl+click per slot).
             int haveInInv = CountInventoryItems(gc, currentPath);
             if (haveInInv >= wantTotal)
             {
@@ -506,15 +498,9 @@ namespace AutoExile.Systems
                 return StashResult.InProgress;
             }
 
-            // Settle window after each batch — gives the UI time to update so
-            // CountInventoryItems reflects the just-transferred items before we
-            // launch another batch.
             if ((DateTime.Now - _lastActionTime).TotalMilliseconds < ActionCooldownMs)
                 return StashResult.InProgress;
 
-            // Find ALL matching items in the visible stash tab. Batch-clicking ONE
-            // position N times only works for stacks; for non-stackable items
-            // (maps) each one occupies a different slot and we need to click each.
             var items = stashEl.VisibleStash?.VisibleInventoryItems;
             if (items == null)
             {
@@ -525,6 +511,8 @@ namespace AutoExile.Systems
 
             var windowRect = gc.Window.GetWindowRectangle();
             var positions = new List<Vector2>();
+            int neededDeficit = wantTotal - haveInInv;
+
             foreach (var item in items)
             {
                 var entity = item.Entity;
@@ -534,6 +522,20 @@ namespace AutoExile.Systems
                     positions.Add(new Vector2(
                         windowRect.X + rect.Center.X,
                         windowRect.Y + rect.Center.Y));
+
+                    // For stackable items (currency/scarabs), 1 click pulls a whole stack
+                    bool isStackable = entity.TryGetComponent<Stack>(out _);
+                    if (isStackable)
+                    {
+                        // 1 stack is enough to satisfy or progress
+                        break;
+                    }
+                    else
+                    {
+                        // Non-stackables (maps): 1 click = 1 item
+                        if (positions.Count >= neededDeficit)
+                            break;
+                    }
                 }
             }
 
@@ -544,11 +546,7 @@ namespace AutoExile.Systems
                 return StashResult.InProgress;
             }
 
-            Status = $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal}, {positions.Count} stash slots)";
-            // CtrlClickBatch holds Ctrl down across every click in one async pass,
-            // then releases. Items get transferred (stacks fully, single items one-per-click).
-            // After the batch completes, IsBatchRunning flips back to false; the
-            // settle window above lets inventory state catch up before we re-evaluate.
+            Status = $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal})";
             BotInput.CtrlClickBatch(positions);
             _lastActionTime = DateTime.Now;
             return StashResult.InProgress;
@@ -656,17 +654,23 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
-        /// Count inventory items matching a path substring.
+        /// Count inventory items matching a path substring, respecting stack size.
         /// </summary>
         public static int CountInventoryItems(GameController gc, string? pathSubstring)
         {
             var items = GetInventorySlotItems(gc);
             if (items == null || string.IsNullOrEmpty(pathSubstring)) return 0;
             int count = 0;
-            foreach (var item in items)
+            foreach (var slotItem in items)
             {
-                if (item.Item?.Path?.Contains(pathSubstring, StringComparison.OrdinalIgnoreCase) == true)
-                    count++;
+                var item = slotItem.Item;
+                if (item?.Path?.Contains(pathSubstring, StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    if (item.TryGetComponent<Stack>(out var stack) && stack.Size > 0)
+                        count += stack.Size;
+                    else
+                        count += 1;
+                }
             }
             return count;
         }

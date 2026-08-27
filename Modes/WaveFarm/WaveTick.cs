@@ -151,7 +151,10 @@ namespace AutoExile.Modes.WaveFarm
                     Decision = "Mechanic";
                     return false;
                 }
-                // Mechanic finished — fall through to pick next action
+                
+                // Mechanic finished (or timed out) — clear and continue farming
+                ctx.Mechanics.ForceCompleteActive();
+                _forceReEval = true;
             }
 
             // ── 1b. Eldritch Altar handler ── (separate from IMapMechanic — uses its
@@ -785,7 +788,7 @@ namespace AutoExile.Modes.WaveFarm
                         // Stop continuous exploratory movement before interacting with ground items
                         if (lootEntity.DistancePlayer <= ctx.Interaction.InteractRadius)
                             ctx.Navigation.Stop(gc);
-                            
+
                         var candidate = FindCandidate(ctx.Loot, action.TargetEntityId);
                         ctx.Interaction.PickupGroundItem(lootEntity, ctx.Navigation,
                             requireProximity: lootEntity.DistancePlayer > ctx.Interaction.InteractRadius);
