@@ -25,8 +25,10 @@ namespace AutoExile.Modes.WaveFarm
         private IFarmPlan _plan = null!;
         private DateTime _lastLootScan = DateTime.MinValue;
         private DateTime _lastMechanicScan = DateTime.MinValue;
-        private const int LootScanIntervalMs = 500;
+        private const int LootScanIntervalMs = 150;
         private const int MechanicScanIntervalMs = 1000;
+        private DateTime _postCombatLootUntil = DateTime.MinValue;
+        private const double PostCombatLootDelaySeconds = 0.6; // 600ms wait after pack kill
 
         // Interactable tracking
         private readonly HashSet<long> _failedInteractables = new();
@@ -285,7 +287,13 @@ namespace AutoExile.Modes.WaveFarm
                 _engagedInCombat = true;
             }
             if (_engagedInCombat && !ctx.Combat.InCombat)
-                _engagedInCombat = false; // Pack cleared — release
+            {
+                _engagedInCombat = false;
+                // Pack just died — start post-combat linger timer to allow items to drop & labels to spawn
+                _postCombatLootUntil = DateTime.Now.AddSeconds(PostCombatLootDelaySeconds);
+                _forceReEval = true;
+                ctx.Loot.Scan(gc); // Immediate scan
+            }
 
             // Safety: disengage after 10s to prevent infinite lock on unkillable/unreachable mobs
             if (_engagedInCombat && (DateTime.Now - _engageStartTime).TotalSeconds > 10)
@@ -567,6 +575,12 @@ namespace AutoExile.Modes.WaveFarm
                 return WaveAction.PickupLoot(forwardLoot.Entity.Id, forwardLoot.Entity.GridPosNum);
             }
 
+            if (DateTime.Now < _postCombatLootUntil)
+            {
+                Status = "Waiting for loot drops to settle...";
+                return WaveAction.None;
+            }
+
             // P2: Deferred mechanic ready
             var deferredReady = _deferred.GetReadyMechanic(ctx, playerPos, _plan);
             if (deferredReady.HasValue)
@@ -768,6 +782,10 @@ namespace AutoExile.Modes.WaveFarm
                     var lootEntity = FindEntity(ctx, action.TargetEntityId);
                     if (lootEntity != null)
                     {
+                        // Stop continuous exploratory movement before interacting with ground items
+                        if (lootEntity.DistancePlayer <= ctx.Interaction.InteractRadius)
+                            ctx.Navigation.Stop(gc);
+                            
                         var candidate = FindCandidate(ctx.Loot, action.TargetEntityId);
                         ctx.Interaction.PickupGroundItem(lootEntity, ctx.Navigation,
                             requireProximity: lootEntity.DistancePlayer > ctx.Interaction.InteractRadius);
