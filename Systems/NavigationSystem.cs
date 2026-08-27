@@ -86,8 +86,12 @@ namespace AutoExile.Systems
         // Obstacle injection — modes can mark grid positions as blocked (e.g. locked puzzle doors)
         // NavigateTo patches these cells to 0 before running A*, without modifying game memory.
         private readonly List<Vector2> _blockedPositions = new();
-        private const int BlockedRadius = 7; // cells around each blocked position to zero out (covers full puzzle door gap including fringe)
+        private const int BlockedRadius = 1; // 3x3 cells around blocked position (blocks door threshold without wiping out hallways)
 
+        /// <summary>
+        /// Set grid positions that A* should treat as impassable.
+        /// Cleared automatically — caller should re-set each tick or when positions change.
+        /// </summary>
         /// <summary>
         /// Set grid positions that A* should treat as impassable.
         /// Cleared automatically — caller should re-set each tick or when positions change.
@@ -520,12 +524,10 @@ namespace AutoExile.Systems
             if (screenPos.X > 0 && screenPos.X < windowRect.Width &&
                 screenPos.Y > 0 && screenPos.Y < windowRect.Height)
             {
-                // If target is too close to screen center, push it outward along the same
-                // direction so the click produces meaningful movement in PoE.
                 var dir = screenPos - center;
                 if (dir.Length() < MinScreenDist)
                 {
-                    if (dir.Length() < 1f) return; // target is exactly on player
+                    if (dir.Length() < 1f) return;
                     screenPos = center + Vector2.Normalize(dir) * MinScreenDist;
                 }
                 absPos = new Vector2(windowRect.X + screenPos.X, windowRect.Y + screenPos.Y);
@@ -539,13 +541,12 @@ namespace AutoExile.Systems
                 absPos = new Vector2(windowRect.X + edgePoint.X, windowRect.Y + edgePoint.Y);
             }
 
-            // Continuous movement: hold the move key and update cursor position each tick.
-            // First call starts movement (KeyDown), subsequent calls just reposition cursor.
-            // This replaces the old pulse model: CursorPressKey → wait → CursorPressKey.
+            // Always use MoveKey (synced from PrimaryMoveKey)
+            var moveKey = MoveKey != Keys.None ? MoveKey : Keys.T;
             if (BotInput.IsMovementActive && !BotInput.IsMovementSuspended)
                 BotInput.UpdateMovementCursor(absPos);
             else
-                BotInput.StartMovement(absPos, MoveKey);
+                BotInput.StartMovement(absPos, moveKey);
         }
 
         private void ExecuteBlink(Vector2 screenPos, SharpDX.RectangleF windowRect,

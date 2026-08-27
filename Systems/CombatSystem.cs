@@ -687,9 +687,8 @@ namespace AutoExile.Systems
         // ═══════════════════════════════════════════════════
 
         /// <summary>
-        /// Refresh skill bar data — updates MovementSkills readiness every tick,
-        /// full rebuild every 500ms. Public so BotCore can call it even when combat is disabled
-        /// (NavigationSystem needs MovementSkills for dash-for-speed).
+        /// Refresh skill bar data from user Build Settings and in-game SkillBarIds.
+        /// Resolves PrimaryMovement (Move Only) key to match the actual bound key (e.g. Keys.Q).
         /// </summary>
         public void RefreshSkillBar(GameController gc, BotSettings.BuildSettings settings)
         {
@@ -710,7 +709,63 @@ namespace AutoExile.Systems
             _primaryMovementEntry = null;
             _movementSkillEntries.Clear();
 
-            // Iterate user-configured slots
+            Keys detectedMoveKey = Keys.None;
+
+            // 1. Scan in-game SkillBarIds to find which key has the "move" skill (e.g. Keys.Q)
+            var actor = gc.Player?.GetComponent<Actor>();
+            if (actor?.ActorSkills != null)
+            {
+                var barIds = gc.IngameState?.ServerData?.SkillBarIds;
+                if (barIds != null)
+                {
+                    for (int bi = 0; bi < 8 && bi < barIds.Count; bi++)
+                    {
+                        var barKey = KeyForSlot(bi);
+                        if (barKey == Keys.None) continue;
+                        if (barIds[bi] != 0)
+                        {
+                            var skill = actor.ActorSkills.FirstOrDefault(s => s.Id == barIds[bi]);
+                            if (skill != null)
+                            {
+                                var internalName = skill.InternalName ?? "";
+                                var name = skill.Name ?? "";
+                                if (internalName.Equals("move", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("Move", StringComparison.OrdinalIgnoreCase) ||
+                                    name.Equals("Move Only", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    detectedMoveKey = barKey;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Scan user-configured slots in Build Settings for explicitly assigned PrimaryMovement role
+            Keys configMoveKey = Keys.None;
+            foreach (var slotConfig in settings.AllSkillSlots)
+            {
+                var key = slotConfig.Key.Value;
+                if (key == Keys.None) continue;
+
+                var roleStr = (slotConfig.Role.Value ?? "").Trim();
+                if (string.Equals(roleStr, "Move", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(roleStr, "Move Only", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(roleStr, "PrimaryMovement", StringComparison.OrdinalIgnoreCase))
+                {
+                    configMoveKey = key;
+                    break;
+                }
+            }
+
+            // Assign PrimaryMoveKey: prefer explicitly configured non-default key or detected in-game key
+            if (configMoveKey != Keys.None)
+                PrimaryMoveKey = configMoveKey;
+            else if (detectedMoveKey != Keys.None)
+                PrimaryMoveKey = detectedMoveKey;
+
+            // 3. Iterate user-configured slots for attack/buff/movement skills
             foreach (var slotConfig in settings.AllSkillSlots)
             {
                 var key = slotConfig.Key.Value;
@@ -718,9 +773,8 @@ namespace AutoExile.Systems
 
                 var roleStr = (slotConfig.Role.Value ?? "").Trim();
 
-                // Parse role string with aliases (Attack -> Enemy, Buff -> Self, etc.)
                 SkillRole role;
-                if (string.Equals(roleStr, "Attack", StringComparison.OrdinalIgnoreCase) ||
+                if (string.Equals(roleStr, "Attack", StringComparison.OrdinalIgnoreCase) || 
                     string.Equals(roleStr, "Enemy", StringComparison.OrdinalIgnoreCase))
                 {
                     role = SkillRole.Enemy;
@@ -744,19 +798,13 @@ namespace AutoExile.Systems
                 {
                     role = SkillRole.PrimaryMovement;
                 }
-                else if (string.Equals(roleStr, "Corpse", StringComparison.OrdinalIgnoreCase))
-                {
-                    role = SkillRole.Corpse;
-                }
                 else if (!Enum.TryParse<SkillRole>(roleStr, true, out role))
                 {
-                    // Fallback: If a valid key is assigned (not T), treat it as an Enemy attack skill
-                    role = (key != Keys.T && key != Keys.None) ? SkillRole.Enemy : SkillRole.Disabled;
+                    role = SkillRole.Disabled;
                 }
 
                 if (role == SkillRole.Disabled) continue;
 
-                // PrimaryMovement (Move Only key)
                 if (role == SkillRole.PrimaryMovement)
                 {
                     _primaryMovementEntry = new SkillBarEntry
@@ -766,13 +814,10 @@ namespace AutoExile.Systems
                         Role = role,
                         Priority = 0,
                     };
-                    PrimaryMoveKey = key;
                     continue;
                 }
 
-                // Try to find matching ActorSkill
                 ActorSkill? matchedSkill = null;
-                var actor = gc.Player?.GetComponent<Actor>();
                 if (actor?.ActorSkills != null)
                 {
                     var barIds = gc.IngameState?.ServerData?.SkillBarIds;
@@ -836,26 +881,6 @@ namespace AutoExile.Systems
                 else
                 {
                     _skillBar.Add(entry);
-                }
-            }
-
-            // Fallback: If no combat skills were configured, auto-register 'W' as Attack if present
-            if (_skillBar.Count == 0)
-            {
-                var actor = gc.Player?.GetComponent<Actor>();
-                if (actor?.ActorSkills != null)
-                {
-                    var wSkill = actor.ActorSkills.FirstOrDefault(s => KeyForSlot(s.SkillSlotIndex) == Keys.W);
-                    if (wSkill != null || true)
-                    {
-                        _skillBar.Add(new SkillBarEntry
-                        {
-                            Skill = wSkill,
-                            Key = Keys.W,
-                            Role = SkillRole.Enemy,
-                            Priority = 8,
-                        });
-                    }
                 }
             }
 

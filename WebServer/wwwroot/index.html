@@ -145,7 +145,7 @@
           <div class="farm-field"><label>Map</label><select id="farmMapSelect" class="farm-input"
               onchange="updateSetting('farming.mapName',this.value)"></select></div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:12px">
           <div class="farm-field"><label>Witness</label><select id="farmWitness" class="farm-input"
               onchange="updateSetting('farming.witnessType',this.value)">
               <option>None</option>
@@ -167,6 +167,8 @@
               <option value="15">15+</option>
               <option value="16">16</option>
             </select></div>
+          <div class="farm-field"><label>Exit Rem. &lt;</label><input id="farmMaxRemaining" type="number" min="0" max="50" class="farm-input" style="padding:4px 8px"
+              placeholder="10" onchange="updateSetting('farming.maxRemainingMonsters',parseInt(this.value))"></div>
         </div>
         <div style="margin-bottom:12px">
           <label class="field-title" style="display:block;margin-bottom:6px">Scarab Slots</label>

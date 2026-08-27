@@ -838,6 +838,8 @@ function initFarmCard() {
     if (S['farming.witnessType'] && $('farmWitness')) $('farmWitness').value = S['farming.witnessType'].value || 'None';
     if (S['farming.atlasTreePreset'] && $('farmAtlasTree')) $('farmAtlasTree').value = S['farming.atlasTreePreset'].value ?? 0;
     if (S['mapRolling.minMapTier'] && $('farmMinTier')) $('farmMinTier').value = S['mapRolling.minMapTier'].value ?? 0;
+    if (S['farming.maxRemainingMonsters'] && $('farmMaxRemaining')) $('farmMaxRemaining').value = S['farming.maxRemainingMonsters'].value ?? 10;
+
     for (let i = 1; i <= 5; i++) {
         const el = $('farmScarab' + i);
         if (el && S['mapDevice.slot' + i]) el.value = S['mapDevice.slot' + i].value || '';
@@ -870,7 +872,20 @@ async function loadFarmStrategySettings(strategyName) {
     const sharedPrefix = 'farming.', strategyPrefix = farmStrategySettingsPrefix[strategyName];
     if (!settingsLoaded) await loadSettings();
 
-    const shownAbove = new Set(['farming.farmStrategy', 'farming.mapName', 'farming.witnessType', 'farming.atlasTreePreset', 'mapRolling.minMapTier', 'mapDevice.slot1', 'mapDevice.slot2', 'mapDevice.slot3', 'mapDevice.slot4', 'mapDevice.slot5', 'run.portalKey']);
+    const shownAbove = new Set([
+        'farming.farmStrategy', 
+        'farming.mapName', 
+        'farming.witnessType', 
+        'farming.atlasTreePreset', 
+        'farming.maxRemainingMonsters',
+        'mapRolling.minMapTier', 
+        'mapDevice.slot1', 
+        'mapDevice.slot2', 
+        'mapDevice.slot3', 
+        'mapDevice.slot4', 
+        'mapDevice.slot5', 
+        'run.portalKey'
+    ]);
     const entries = [];
     for (const [key, meta] of Object.entries(S)) {
         if (shownAbove.has(key)) continue;
@@ -973,7 +988,15 @@ function renderModeTab(container, modeName) {
 
     for (const section of cfg.sections) {
         if (section === 'farming') {
-            addSection(container, 'Farming', [['farming.mapName'], ['farming.farmStrategy']]);
+            addSection(container, 'Farming', [
+                ['farming.mapName'], 
+                ['farming.farmStrategy'],
+                ['farming.maxRemainingMonsters', '0 = disabled (clears full map)'],
+                ['farming.minCoverage'],
+                ['farming.minPackDensity'],
+                ['farming.detourForRares'],
+                ['farming.maxDetourDistance']
+            ]);
             addSection(container, 'Map Rolling (shared)', [['mapRolling.minMapTier'], ['mapRolling.dangerousMapMods'], ['mapRolling.minMapQuantity']]);
             addSection(container, 'Map Device Slots (shared)', [['mapDevice.slot1'], ['mapDevice.slot2'], ['mapDevice.slot3'], ['mapDevice.slot4'], ['mapDevice.slot5']]);
             addSection(container, 'Run (shared)', [['run.portalKey'], ['run.maxDeaths'], ['run.stashItemThreshold'], ['run.lootSweepTimeoutSeconds']]);

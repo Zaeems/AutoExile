@@ -450,6 +450,9 @@ namespace AutoExile
             [Menu("Min Coverage", "Minimum map exploration % before clearing is considered done. Higher = more thorough clear.")]
             public RangeNode<float> MinCoverage { get; set; } = new RangeNode<float>(0.85f, 0f, 1f);
 
+            [Menu("Exit When Mobs Remaining <", "Instantly exit the map when remaining monsters drop below this threshold. 0 = disabled (clears full map).")]
+            public RangeNode<int> MaxRemainingMonsters { get; set; } = new RangeNode<int>(10, 0, 50);
+
             // ── Atlas setup (pre-populated by strategy defaults, user can override) ──
 
             [Menu("Witness Type", "Which endgame witness to use. Strategies pre-populate this but you can override.")]
