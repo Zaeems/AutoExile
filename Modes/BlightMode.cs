@@ -77,13 +77,16 @@ namespace AutoExile.Modes
 
         private void StartHideoutFlow(BotContext ctx)
         {
+            bool ravaged = _settings.RunBlightRavaged.Value;
+            string mapIdentifier = ravaged ? StashSystem.BlightRavagedMapIdentifier : StashSystem.BlightMapIdentifier;
+
             _hideoutFlow.Start(
-                mapFilter: MapDeviceSystem.IsAnyBlightMap,
-                stashItemFilter: item => !StashSystem.IsBlightMapEntity(item.Item),
-                inventoryFragmentPath: StashSystem.BlightMapIdentifier,
+                mapFilter: ravaged ? MapDeviceSystem.IsBlightRavagedMap : MapDeviceSystem.IsBlightedMap,
+                stashItemFilter: item => !StashSystem.IsBlightMapEntity(item.Item, ravagedOnly: ravaged),
+                inventoryFragmentPath: mapIdentifier,
                 dumpTabName: ctx.Settings.Stash.DumpTabName.Value,
                 resourceTabName: _settings.BlightMapTabName.Value,
-                withdrawFragmentPath: StashSystem.BlightMapIdentifier,
+                withdrawFragmentPath: mapIdentifier,
                 fragmentStock: _settings.BlightMapStock.Value,
                 minFragments: 1,
                 stashItemThreshold: ctx.Settings.Run.StashItemThreshold.Value

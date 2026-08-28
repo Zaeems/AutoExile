@@ -148,9 +148,14 @@ namespace AutoExile.Modes.Shared
                 activeWithdrawList = new List<(string, int)>();
                 foreach (var (path, target) in _withdrawList)
                 {
-                    var have = path == StashSystem.BlightMapIdentifier
-                        ? StashSystem.CountBlightMaps(ctx.Game)
-                        : StashSystem.CountInventoryItems(ctx.Game, path);
+                    int have;
+                    if (path == StashSystem.BlightMapIdentifier)
+                        have = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: false);
+                    else if (path == StashSystem.BlightRavagedMapIdentifier)
+                        have = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: true);
+                    else
+                        have = StashSystem.CountInventoryItems(ctx.Game, path);
+
                     var need = target - have;
                     if (need > 0)
                     {
@@ -162,9 +167,13 @@ namespace AutoExile.Modes.Shared
             }
 
             // Count fragments and non-fragment loot in inventory (single-item path)
-            int fragmentsInInventory = _withdrawFragmentPath == StashSystem.BlightMapIdentifier
-                ? StashSystem.CountBlightMaps(ctx.Game)
-                : StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+            int fragmentsInInventory;
+            if (_withdrawFragmentPath == StashSystem.BlightMapIdentifier)
+                fragmentsInInventory = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: false);
+            else if (_withdrawFragmentPath == StashSystem.BlightRavagedMapIdentifier)
+                fragmentsInInventory = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: true);
+            else
+                fragmentsInInventory = StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
 
             int lootItems = StashSystem.CountNonMatchingItems(ctx.Game, _withdrawFragmentPath);
 
@@ -182,7 +191,7 @@ namespace AutoExile.Modes.Shared
             // Not enough fragments and no way to get more — signal stop (only for modes that use fragments)
             if (usesFragments && fragmentsInInventory < minNeeded && !canWithdraw)
             {
-                Status = "No fragments/maps in inventory";
+                Status = "No maps/fragments in inventory";
                 _phase = HideoutPhase.Idle;
                 return HideoutSignal.NoFragments;
             }
@@ -230,9 +239,13 @@ namespace AutoExile.Modes.Shared
                     // Verify we have enough fragments before proceeding to map device
                     if (!string.IsNullOrEmpty(_withdrawFragmentPath) && !string.IsNullOrEmpty(_resourceTabName))
                     {
-                        int frags = _withdrawFragmentPath == StashSystem.BlightMapIdentifier
-                            ? StashSystem.CountBlightMaps(ctx.Game)
-                            : StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+                        int frags;
+                        if (_withdrawFragmentPath == StashSystem.BlightMapIdentifier)
+                            frags = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: false);
+                        else if (_withdrawFragmentPath == StashSystem.BlightRavagedMapIdentifier)
+                            frags = StashSystem.CountBlightMaps(ctx.Game, ravagedOnly: true);
+                        else
+                            frags = StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
 
                         int needed = _minFragments > 0 ? _minFragments : 1;
                         if (frags < needed)

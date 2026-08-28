@@ -1009,6 +1009,7 @@ function renderModeTab(container, modeName) {
             const blightDiv = document.createElement('div');
             blightDiv.innerHTML = '<div class="section-divider">Blight Maps & Stash</div>';
             addFieldsTo(blightDiv, [
+                ['blight.runBlightRavaged', 'Run Blight-Ravaged maps instead of standard Blighted maps'],
                 ['blight.blightMapTabName', 'Stash tab to pull Blighted maps from when out of maps'],
                 ['blight.blightMapStock', 'Number of Blighted maps to maintain in inventory'],
                 ['stash.dumpTabName', 'Stash tab for dumping loot']
@@ -1030,7 +1031,10 @@ function renderModeTab(container, modeName) {
                 ['blight.sweepPumpReturnSeconds'],
                 ['blight.sweepPumpRadius']
             ]);
-            const towerLabel = document.createElement('div'); towerLabel.className = 'section-divider'; towerLabel.textContent = 'Tower Priorities'; blightDiv.appendChild(towerLabel);
+            const towerLabel = document.createElement('div'); 
+            towerLabel.className = 'section-divider'; 
+            towerLabel.textContent = 'Tower Priorities'; 
+            blightDiv.appendChild(towerLabel);
             blightDiv.appendChild(renderTowerTable());
             container.appendChild(blightDiv);
         } else if (section === 'heist') {

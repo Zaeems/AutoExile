@@ -459,9 +459,13 @@ namespace AutoExile.Systems
                         if (item == null) continue;
 
                         bool match = false;
-                        if (_inventoryFragmentPath == StashSystem.BlightMapIdentifier || _mapFilter == IsAnyBlightMap || _mapFilter == IsBlightedMap || _mapFilter == IsBlightRavagedMap)
+                        if (_inventoryFragmentPath == StashSystem.BlightMapIdentifier || _mapFilter == IsBlightedMap)
                         {
-                            match = StashSystem.IsBlightMapEntity(item);
+                            match = StashSystem.IsBlightMapEntity(item, ravagedOnly: false);
+                        }
+                        else if (_inventoryFragmentPath == StashSystem.BlightRavagedMapIdentifier || _mapFilter == IsBlightRavagedMap)
+                        {
+                            match = StashSystem.IsBlightMapEntity(item, ravagedOnly: true);
                         }
                         else if (_inventoryFragmentPath != null && item.Path != null)
                         {
@@ -484,7 +488,7 @@ namespace AutoExile.Systems
                             _lastActionTime = DateTime.Now;
                             Status = namedMapFlow
                                 ? $"[Select] Ctrl+clicking inventory map into {TargetMapName} slot"
-                                : "[Select] Right-clicking Blighted map/fragment from inventory";
+                                : "[Select] Right-clicking map/fragment from inventory";
                         }
                         return MapDeviceResult.InProgress;
                     }
@@ -492,7 +496,7 @@ namespace AutoExile.Systems
 
                 if (!foundAny && _inventoryFragmentPath != null)
                 {
-                    Status = $"[Select] No '{_inventoryFragmentPath}' in stash or inventory";
+                    Status = $"[Select] No matching map in stash or inventory";
                     _phase = MapDevicePhase.Idle;
                     return MapDeviceResult.Failed;
                 }
@@ -524,7 +528,7 @@ namespace AutoExile.Systems
 
             return MapDeviceResult.InProgress;
         }
-
+        
         private DateTime _lastSearchPastedAt = DateTime.MinValue;
         private string _lastSearchedMapName = "";
 
@@ -1097,15 +1101,16 @@ namespace AutoExile.Systems
         // --- Static map filter helpers ---
 
         /// <summary>
-        /// Filter for blighted maps (has InfectedMap mod, NOT UberInfectedMap).
+        /// Filter for standard blighted maps (has InfectedMap mod, NOT UberInfectedMap).
         /// </summary>
         public static bool IsBlightedMap(Element item)
         {
             var entity = item.Entity;
             if (entity == null) return false;
             if (!entity.Path?.Contains("Maps/") == true) return false;
-            if (!entity.TryGetComponent<Mods>(out var mods)) return false;
-            return mods.ItemMods?.Any(m => m.RawName == "InfectedMap") == true;
+            if (!entity.TryGetComponent<Mods>(out var mods) || mods.ItemMods == null) return false;
+            return mods.ItemMods.Any(m => m.RawName == "InfectedMap") &&
+                   !mods.ItemMods.Any(m => m.RawName.StartsWith("UberInfectedMap"));
         }
 
         /// <summary>
@@ -1116,8 +1121,8 @@ namespace AutoExile.Systems
             var entity = item.Entity;
             if (entity == null) return false;
             if (!entity.Path?.Contains("Maps/") == true) return false;
-            if (!entity.TryGetComponent<Mods>(out var mods)) return false;
-            return mods.ItemMods?.Any(m => m.RawName.StartsWith("UberInfectedMap")) == true;
+            if (!entity.TryGetComponent<Mods>(out var mods) || mods.ItemMods == null) return false;
+            return mods.ItemMods.Any(m => m.RawName.StartsWith("UberInfectedMap"));
         }
 
         /// <summary>

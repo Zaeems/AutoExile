@@ -645,12 +645,15 @@ namespace AutoExile
         [Submenu(CollapsedByDefault = true)]
         public class BlightSettings
         {
+            [Menu("Run Blight-Ravaged Maps", "When enabled, runs Blight-Ravaged maps instead of standard Blighted maps. (Runs either/or, never both).")]
+            public ToggleNode RunBlightRavaged { get; set; } = new ToggleNode(false);
+            
             [Menu("Blight Map Stash Tab", "Stash tab to pull Blighted maps from when the Atlas device and inventory run out. Leave empty to disable auto-refill.")]
             public ListNode BlightMapTabName { get; set; } = new ListNode { Value = "" };
 
             [Menu("Blight Map Stock", "How many Blighted maps to withdraw from stash into inventory when running low (1-20).")]
             public RangeNode<int> BlightMapStock { get; set; } = new RangeNode<int>(1, 1, 20);
-            
+
             [Menu("Stand at Tower", "When enabled, forces the player to hold position near the blight pump/tower until the timer finishes, preventing early wandering or distant sweeping.")]
             public ToggleNode StandAtTower { get; set; } = new ToggleNode(false);
 

@@ -491,9 +491,12 @@ namespace AutoExile.Systems
                 return StashResult.InProgress;
             }
 
-            bool isBlightWithdrawal = currentPath == BlightMapIdentifier;
-            int haveInInv = isBlightWithdrawal
-                ? CountBlightMaps(gc)
+            bool isBlightStandard = currentPath == BlightMapIdentifier;
+            bool isBlightRavaged = currentPath == BlightRavagedMapIdentifier;
+            bool isBlightSearch = isBlightStandard || isBlightRavaged;
+
+            int haveInInv = isBlightSearch
+                ? CountBlightMaps(gc, ravagedOnly: isBlightRavaged)
                 : CountInventoryItems(gc, currentPath);
 
             if (haveInInv >= wantTotal)
@@ -522,8 +525,8 @@ namespace AutoExile.Systems
                 var entity = item.Entity;
                 if (entity == null) continue;
 
-                bool isMatch = isBlightWithdrawal
-                    ? IsBlightMapEntity(entity)
+                bool isMatch = isBlightSearch
+                    ? IsBlightMapEntity(entity, ravagedOnly: isBlightRavaged)
                     : entity.Path?.Contains(currentPath, StringComparison.OrdinalIgnoreCase) == true;
 
                 if (isMatch)
@@ -533,16 +536,13 @@ namespace AutoExile.Systems
                         windowRect.X + rect.Center.X,
                         windowRect.Y + rect.Center.Y));
 
-                    // For stackable items (currency/scarabs), 1 click pulls a whole stack
                     bool isStackable = entity.TryGetComponent<Stack>(out _);
                     if (isStackable)
                     {
-                        // 1 stack is enough to satisfy or progress
                         break;
                     }
                     else
                     {
-                        // Non-stackables (maps): 1 click = 1 item
                         if (positions.Count >= neededDeficit)
                             break;
                     }
@@ -551,16 +551,17 @@ namespace AutoExile.Systems
 
             if (positions.Count == 0)
             {
-                Status = isBlightWithdrawal
-                    ? $"Blighted maps not found in tab ({haveInInv}/{wantTotal} have) — skipping"
-                    : $"'{currentPath}' not found in tab ({haveInInv}/{wantTotal} have) — skipping";
+                string label = isBlightRavaged ? "Blight-Ravaged maps" : isBlightStandard ? "Blighted maps" : $"'{currentPath}'";
+                Status = $"{label} not found in tab ({haveInInv}/{wantTotal} have) — skipping";
                 AdvanceOrFinishWithdraw(gc);
                 return StashResult.InProgress;
             }
 
-            Status = isBlightWithdrawal
-                ? $"Withdrawing Blighted Maps ({haveInInv}/{wantTotal})"
-                : $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal})";
+            Status = isBlightRavaged
+                ? $"Withdrawing Blight-Ravaged Maps ({haveInInv}/{wantTotal})"
+                : isBlightStandard
+                    ? $"Withdrawing Blighted Maps ({haveInInv}/{wantTotal})"
+                    : $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal})";
 
             BotInput.CtrlClickBatch(positions);
             _lastActionTime = DateTime.Now;
@@ -1128,32 +1129,34 @@ namespace AutoExile.Systems
         }
 
         public const string BlightMapIdentifier = "__BlightMap__";
+        public const string BlightRavagedMapIdentifier = "__BlightRavagedMap__";
 
         /// <summary>
-        /// Helper to identify if an entity is a Blighted or Blight-Ravaged map.
+        /// Identifies if an entity is a standard Blighted Map or a Blight-Ravaged Map.
         /// </summary>
-        public static bool IsBlightMapEntity(Entity? entity)
+        public static bool IsBlightMapEntity(Entity? entity, bool ravagedOnly = false)
         {
             if (entity == null) return false;
             if (entity.Path == null || !entity.Path.Contains("Maps/")) return false;
-            if (entity.TryGetComponent<Mods>(out var mods))
-            {
-                return mods.ItemMods?.Any(m => m.RawName == "InfectedMap" || m.RawName.StartsWith("UberInfectedMap")) == true;
-            }
-            return false;
+            if (!entity.TryGetComponent<Mods>(out var mods) || mods.ItemMods == null) return false;
+
+            bool isRavaged = mods.ItemMods.Any(m => m.RawName.StartsWith("UberInfectedMap"));
+            bool isStandardBlight = mods.ItemMods.Any(m => m.RawName == "InfectedMap") && !isRavaged;
+
+            return ravagedOnly ? isRavaged : isStandardBlight;
         }
 
         /// <summary>
-        /// Count all Blighted and Blight-Ravaged maps in player inventory.
+        /// Count either standard Blighted maps or Blight-Ravaged maps in player inventory.
         /// </summary>
-        public static int CountBlightMaps(GameController gc)
+        public static int CountBlightMaps(GameController gc, bool ravagedOnly = false)
         {
             var items = GetInventorySlotItems(gc);
             if (items == null) return 0;
             int count = 0;
             foreach (var slotItem in items)
             {
-                if (IsBlightMapEntity(slotItem.Item))
+                if (IsBlightMapEntity(slotItem.Item, ravagedOnly))
                     count++;
             }
             return count;
