@@ -75,6 +75,21 @@ namespace AutoExile.Modes
             ? $"{_towerAction.CurrentPhase}: {_towerAction.Status}"
             : "";
 
+        private void StartHideoutFlow(BotContext ctx)
+        {
+            _hideoutFlow.Start(
+                mapFilter: MapDeviceSystem.IsAnyBlightMap,
+                stashItemFilter: item => !StashSystem.IsBlightMapEntity(item.Item),
+                inventoryFragmentPath: StashSystem.BlightMapIdentifier,
+                dumpTabName: ctx.Settings.Stash.DumpTabName.Value,
+                resourceTabName: _settings.BlightMapTabName.Value,
+                withdrawFragmentPath: StashSystem.BlightMapIdentifier,
+                fragmentStock: _settings.BlightMapStock.Value,
+                minFragments: 1,
+                stashItemThreshold: ctx.Settings.Run.StashItemThreshold.Value
+            );
+        }
+
         public void OnEnter(BotContext ctx)
         {
             _settings = ctx.Settings.Blight;
@@ -90,6 +105,7 @@ namespace AutoExile.Modes
             {
                 _phase = BlightPhase.InHideout;
                 _phaseStartTime = DateTime.Now;
+                StartHideoutFlow(ctx);
                 StatusText = "In hideout — preparing";
             }
             else
@@ -130,18 +146,11 @@ namespace AutoExile.Modes
             {
                 _blight.Tick(gc);
 
-                // Suppress combat repositioning during phases where BlightMode drives navigation.
-                // Combat still scans threats and fires skills — just won't move the player.
-                // Allow combat positioning in Sweep phase or in WaitForCompletion (when StandAtTower is off and no tower action).
                 bool allowCombatMovement = ((_phase == BlightPhase.WaitForCompletion && !_settings.StandAtTower.Value && _towerAction == null)
                     || (_phase == BlightPhase.Sweep && _sweepSubPhase != SweepSubPhase.ReturnToPump))
                     && ctx.Combat.NearbyMonsterCount > 0;
                 ctx.Combat.SuppressPositioning = !allowCombatMovement;
 
-                // During active encounter phases, anchor combat to the defense point:
-                // - DefenseAnchor: target scoring favors monsters closer to the pump hub
-                // - LeashAnchor: positioning won't pull player beyond safety radius during defense
-                // During Sweep phase, allow full network bubble so player can chase stragglers across lanes
                 bool inEncounterPhase = _phase is BlightPhase.TowerManagement or BlightPhase.WaitForCompletion or BlightPhase.Sweep;
                 if (inEncounterPhase && _blight.DefensePosition.HasValue)
                 {
@@ -177,8 +186,13 @@ namespace AutoExile.Modes
                         _blight.Reset();
                         _phase = BlightPhase.InHideout;
                         _phaseStartTime = DateTime.Now;
-                        _hideoutFlow.Start(MapDeviceSystem.IsAnyBlightMap);
+                        StartHideoutFlow(ctx);
                         StatusText = "No portal found — starting new map";
+                    }
+                    else if (hideoutSignal == HideoutSignal.NoFragments)
+                    {
+                        StatusText = "Out of Blighted Maps in stash tab and inventory — stopped";
+                        _phase = BlightPhase.Done;
                     }
                     break;
 
@@ -241,7 +255,7 @@ namespace AutoExile.Modes
                     _phase = BlightPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
                     _mapCompleted = false;
-                    _hideoutFlow.Start(MapDeviceSystem.IsAnyBlightMap);
+                    StartHideoutFlow(ctx);
                     StatusText = "Back in hideout — starting new map";
                 }
                 else if (_blight.DeathCount > 0 && _blight.DeathCount < MaxDeaths)
@@ -258,14 +272,14 @@ namespace AutoExile.Modes
                     _blight.Reset();
                     _phase = BlightPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
-                    _hideoutFlow.Start(MapDeviceSystem.IsAnyBlightMap);
+                    StartHideoutFlow(ctx);
                     StatusText = "Too many deaths — starting new map";
                 }
                 else
                 {
                     _phase = BlightPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
-                    _hideoutFlow.Start(MapDeviceSystem.IsAnyBlightMap);
+                    StartHideoutFlow(ctx);
                 }
             }
             else

@@ -106,11 +106,11 @@ namespace AutoExile.Systems
                 return false;
 
             // Reset config — every Start() is a clean slate.
-            StoreTabName         = storeTabName;
-            WithdrawTabName      = withdrawTabName;
+            StoreTabName = storeTabName;
+            WithdrawTabName = withdrawTabName;
             WithdrawFragmentPath = withdrawFragmentPath;
-            WithdrawCount        = withdrawCount;
-            ItemFilter           = itemFilter;
+            WithdrawCount = withdrawCount;
+            ItemFilter = itemFilter;
 
             // Multi-item path: if a list is supplied, that wins over the single-item
             // fields. The single-item API is kept for Boss/Sim where fragmentPath/count
@@ -339,7 +339,7 @@ namespace AutoExile.Systems
                 {
                     _pendingTabSwitch = StoreTabName;
                     _afterTabSwitch = StashPhase.StoreItems;
-        
+
                     _phase = StashPhase.SwitchToStoreTab;
                     _phaseStartTime = DateTime.Now;
                     Status = $"Switching to {StoreTabName} tab for storing";
@@ -491,7 +491,11 @@ namespace AutoExile.Systems
                 return StashResult.InProgress;
             }
 
-            int haveInInv = CountInventoryItems(gc, currentPath);
+            bool isBlightWithdrawal = currentPath == BlightMapIdentifier;
+            int haveInInv = isBlightWithdrawal
+                ? CountBlightMaps(gc)
+                : CountInventoryItems(gc, currentPath);
+
             if (haveInInv >= wantTotal)
             {
                 AdvanceOrFinishWithdraw(gc);
@@ -516,7 +520,13 @@ namespace AutoExile.Systems
             foreach (var item in items)
             {
                 var entity = item.Entity;
-                if (entity?.Path?.Contains(currentPath, StringComparison.OrdinalIgnoreCase) == true)
+                if (entity == null) continue;
+
+                bool isMatch = isBlightWithdrawal
+                    ? IsBlightMapEntity(entity)
+                    : entity.Path?.Contains(currentPath, StringComparison.OrdinalIgnoreCase) == true;
+
+                if (isMatch)
                 {
                     var rect = item.GetClientRect();
                     positions.Add(new Vector2(
@@ -541,12 +551,17 @@ namespace AutoExile.Systems
 
             if (positions.Count == 0)
             {
-                Status = $"'{currentPath}' not found in tab ({haveInInv}/{wantTotal} have) — skipping";
+                Status = isBlightWithdrawal
+                    ? $"Blighted maps not found in tab ({haveInInv}/{wantTotal} have) — skipping"
+                    : $"'{currentPath}' not found in tab ({haveInInv}/{wantTotal} have) — skipping";
                 AdvanceOrFinishWithdraw(gc);
                 return StashResult.InProgress;
             }
 
-            Status = $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal})";
+            Status = isBlightWithdrawal
+                ? $"Withdrawing Blighted Maps ({haveInInv}/{wantTotal})"
+                : $"Withdrawing '{currentPath}' ({haveInInv}/{wantTotal})";
+
             BotInput.CtrlClickBatch(positions);
             _lastActionTime = DateTime.Now;
             return StashResult.InProgress;
@@ -1110,6 +1125,38 @@ namespace AutoExile.Systems
             {
                 g.DrawText($"IncubatorDebug error: {ex.Message}", new Vector2(10, 200), SharpDX.Color.Red);
             }
+        }
+
+        public const string BlightMapIdentifier = "__BlightMap__";
+
+        /// <summary>
+        /// Helper to identify if an entity is a Blighted or Blight-Ravaged map.
+        /// </summary>
+        public static bool IsBlightMapEntity(Entity? entity)
+        {
+            if (entity == null) return false;
+            if (entity.Path == null || !entity.Path.Contains("Maps/")) return false;
+            if (entity.TryGetComponent<Mods>(out var mods))
+            {
+                return mods.ItemMods?.Any(m => m.RawName == "InfectedMap" || m.RawName.StartsWith("UberInfectedMap")) == true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Count all Blighted and Blight-Ravaged maps in player inventory.
+        /// </summary>
+        public static int CountBlightMaps(GameController gc)
+        {
+            var items = GetInventorySlotItems(gc);
+            if (items == null) return 0;
+            int count = 0;
+            foreach (var slotItem in items)
+            {
+                if (IsBlightMapEntity(slotItem.Item))
+                    count++;
+            }
+            return count;
         }
     }
 

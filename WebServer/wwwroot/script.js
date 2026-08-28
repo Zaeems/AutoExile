@@ -1007,7 +1007,16 @@ function renderModeTab(container, modeName) {
             addSection(container, 'Stash (shared)', [['stash.dumpTabName'], ['stash.fragmentTabName']]);
         } else if (section === 'blight') {
             const blightDiv = document.createElement('div');
-            blightDiv.innerHTML = '<div class="section-divider">Blight</div>';
+            blightDiv.innerHTML = '<div class="section-divider">Blight Maps & Stash</div>';
+            addFieldsTo(blightDiv, [
+                ['blight.blightMapTabName', 'Stash tab to pull Blighted maps from when out of maps'],
+                ['blight.blightMapStock', 'Number of Blighted maps to maintain in inventory'],
+                ['stash.dumpTabName', 'Stash tab for dumping loot']
+            ]);
+            const encounterDivider = document.createElement('div'); 
+            encounterDivider.className = 'section-divider'; 
+            encounterDivider.textContent = 'Encounter & Defense'; 
+            blightDiv.appendChild(encounterDivider);
             addFieldsTo(blightDiv, [
                 ['blight.standAtTower'],
                 ['blight.dontBuildTowers'],

@@ -2001,24 +2001,25 @@ namespace AutoExile
                 options.AddRange(names);
 
                 // Update central stash dropdowns — save/restore current values.
-                // Preserve user-saved names even when not in the current live list:
-                // include them as extra options instead of clearing them. Without
-                // this, opening a stash that doesn't have your supplies tab visible
-                // (premium tabs, scrolled offscreen) would silently wipe the setting.
                 var savedDump = Settings.Stash.DumpTabName.Value;
                 var savedFragment = Settings.Stash.FragmentTabName.Value;
                 var savedSupplies = Settings.Stash.MappingSuppliesTabName.Value;
+                var savedBlightMap = Settings.Blight.BlightMapTabName.Value;
 
                 var dumpOptions = WithSavedOption(options, savedDump);
                 var fragmentOptions = WithSavedOption(options, savedFragment);
                 var suppliesOptions = WithSavedOption(options, savedSupplies);
+                var blightMapOptions = WithSavedOption(options, savedBlightMap);
 
                 Settings.Stash.DumpTabName.SetListValues(dumpOptions);
                 Settings.Stash.FragmentTabName.SetListValues(fragmentOptions);
                 Settings.Stash.MappingSuppliesTabName.SetListValues(suppliesOptions);
+                Settings.Blight.BlightMapTabName.SetListValues(blightMapOptions);
+
                 Settings.Stash.DumpTabName.Value = savedDump;
                 Settings.Stash.FragmentTabName.Value = savedFragment;
                 Settings.Stash.MappingSuppliesTabName.Value = savedSupplies;
+                Settings.Blight.BlightMapTabName.Value = savedBlightMap;
             }
             catch { /* stash API can throw during zone transitions */ }
         }

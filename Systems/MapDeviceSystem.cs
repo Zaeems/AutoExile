@@ -332,9 +332,6 @@ namespace AutoExile.Systems
             }
 
             // PRIMARY check — if the activate button is showing, something is loaded
-            // (auto-inserted on atlas open OR placed by a prior tick that we're racing
-            // against). Skip ALL map insertion logic. If scarabs are configured for
-            // this run we still need the InsertScarabs phase before activating.
             if (IsActivateButtonReady(atlas))
             {
                 _phase = NextPhaseAfterMapLoaded();
@@ -345,8 +342,7 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Secondary check — slot 0 occupied (covers cases where activate button
-            // hasn't rendered yet but the slot already shows the item).
+            // Secondary check — slot 0 occupied
             if (IsMapInDevice(atlas))
             {
                 _phase = NextPhaseAfterMapLoaded();
@@ -357,19 +353,13 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Settle window — if we just clicked a fragment, give the UI time to update
-            // before re-checking. Otherwise we re-enter this phase, see no activate
-            // button yet (still rendering), and click the same/next fragment again.
+            // Settle window after click
             if ((DateTime.Now - _lastActionTime).TotalMilliseconds < InsertSettleMs)
             {
                 Status = $"[Select] Waiting {InsertSettleMs}ms for device to update after click";
                 return MapDeviceResult.InProgress;
             }
 
-            // Two distinct flows:
-            // A) Named map (farming/mapping): must select atlas node first → device panel opens → Ctrl+click map key
-            // B) Auto-match (blight/simulacrum/boss): right-click fragment in stash → game handles node selection + insertion
-            // ForceCtrlClick prevents accidental right-click on map keys (farming mode without map name selected)
             bool namedMapFlow = !string.IsNullOrEmpty(TargetMapName);
 
             if (!namedMapFlow && ForceCtrlClick)
@@ -381,17 +371,14 @@ namespace AutoExile.Systems
 
             if (namedMapFlow)
             {
-                // Device panel must be visible before we can Ctrl+click insert
                 var devicePanel = atlas.GetChildAtIndex(7);
                 bool devicePanelVisible = devicePanel?.IsVisible == true;
 
                 if (!devicePanelVisible)
                 {
-                    // Click the atlas node to open the device panel for this map
                     return TickSelectAtlasNode(gc, atlas);
                 }
 
-                // Device panel is open — verify correct map is selected
                 if (!_nodeSelected)
                 {
                     var nameEl = atlas.GetChildFromIndices(MapNameTextPath);
@@ -404,19 +391,17 @@ namespace AutoExile.Systems
                     }
                     else
                     {
-                        // Device panel may still be loading after a right-click — wait before retrying
                         if ((DateTime.Now - _lastActionTime).TotalSeconds < 2.0)
                         {
                             Status = $"[Select] Device panel open, waiting for name to update (got: {nameEl?.Text ?? "null"})";
                             return MapDeviceResult.InProgress;
                         }
-                        // Wrong map selected — click the correct node
                         return TickSelectAtlasNode(gc, atlas);
                     }
                 }
             }
 
-            // Find a matching map from the stash and insert it
+            // Find a matching map from the Atlas stash
             var mapStash = atlas.GetChildFromIndices(MapStashPath);
             if (mapStash == null)
             {
@@ -441,19 +426,11 @@ namespace AutoExile.Systems
                 break;
             }
 
-            // Fallback: check player inventory for the map / fragment.
-            //
-            // Click type depends on flow:
-            //   • Named-map flow (TargetMapName set, e.g. "City Square"): the atlas
-            //     node is already selected, so a Ctrl+click on the inventory map
-            //     drops it into the selected slot.
-            //   • Auto-match flow (boss fragment with no TargetMapName): right-click
-            //     auto-selects the correct atlas node AND inserts in one action.
-            if (targetMap == null && _inventoryFragmentPath != null)
+            // Fallback: check player inventory for the map / fragment
+            if (targetMap == null && (_inventoryFragmentPath != null || _mapFilter != null))
             {
                 if (!CanAct()) return MapDeviceResult.InProgress;
 
-                // Ensure inventory panel is open
                 var invPanel = gc.IngameState.IngameUi.InventoryPanel;
                 if (invPanel == null || !invPanel.IsVisible)
                 {
@@ -463,8 +440,6 @@ namespace AutoExile.Systems
                         _phase = MapDevicePhase.Idle;
                         return MapDeviceResult.Failed;
                     }
-                    // Only count attempt if the key press actually went through
-                    if (!CanAct()) return MapDeviceResult.InProgress;
                     if (BotInput.PressKey(System.Windows.Forms.Keys.I))
                     {
                         _invOpenAttempts++;
@@ -474,7 +449,6 @@ namespace AutoExile.Systems
                     return MapDeviceResult.InProgress;
                 }
 
-                // Inventory is open — find and click the matching item
                 bool foundAny = false;
                 var invItems = gc.IngameState.ServerData?.PlayerInventories?[0]?.Inventory?.InventorySlotItems;
                 if (invItems != null)
@@ -482,9 +456,19 @@ namespace AutoExile.Systems
                     foreach (var slotItem in invItems)
                     {
                         var item = slotItem.Item;
-                        if (item?.Path == null) continue;
-                        if (!item.Path.Contains(_inventoryFragmentPath, StringComparison.OrdinalIgnoreCase))
-                            continue;
+                        if (item == null) continue;
+
+                        bool match = false;
+                        if (_inventoryFragmentPath == StashSystem.BlightMapIdentifier || _mapFilter == IsAnyBlightMap || _mapFilter == IsBlightedMap || _mapFilter == IsBlightRavagedMap)
+                        {
+                            match = StashSystem.IsBlightMapEntity(item);
+                        }
+                        else if (_inventoryFragmentPath != null && item.Path != null)
+                        {
+                            match = item.Path.Contains(_inventoryFragmentPath, StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        if (!match) continue;
 
                         foundAny = true;
                         var windowRect2 = gc.Window.GetWindowRectangle();
@@ -500,13 +484,13 @@ namespace AutoExile.Systems
                             _lastActionTime = DateTime.Now;
                             Status = namedMapFlow
                                 ? $"[Select] Ctrl+clicking inventory map into {TargetMapName} slot"
-                                : "[Select] Right-clicking fragment from inventory";
+                                : "[Select] Right-clicking Blighted map/fragment from inventory";
                         }
                         return MapDeviceResult.InProgress;
                     }
                 }
 
-                if (!foundAny)
+                if (!foundAny && _inventoryFragmentPath != null)
                 {
                     Status = $"[Select] No '{_inventoryFragmentPath}' in stash or inventory";
                     _phase = MapDevicePhase.Idle;
@@ -521,28 +505,23 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // Named map: Ctrl+click inserts into the already-selected node's device slot.
-            // Auto-match: Right-click auto-selects the correct atlas node AND inserts.
             var rect = targetMap.GetClientRect();
             var windowRect = gc.Window.GetWindowRectangle();
             var clickPos = BotInput.RandomizeWithinRect(rect);
             var absPos = new Vector2(windowRect.X + clickPos.X, windowRect.Y + clickPos.Y);
 
-            // Named map or ForceCtrlClick (farming): Ctrl+click to insert into device slot.
-            // Auto-match (boss fragments only): Right-click to auto-select node + insert.
             bool useCtrlClick = namedMapFlow || ForceCtrlClick;
             bool clicked = useCtrlClick
                 ? BotInput.CtrlClick(absPos)
                 : BotInput.RightClick(absPos);
             if (!clicked)
-                return MapDeviceResult.InProgress; // gate blocked, retry next tick
+                return MapDeviceResult.InProgress;
 
             _lastActionTime = DateTime.Now;
             Status = useCtrlClick
                 ? $"[Select] Ctrl+clicking map into device"
                 : "[Select] Right-clicking fragment into device";
 
-            // Re-enter this phase — IsMapInDevice check will advance us
             return MapDeviceResult.InProgress;
         }
 

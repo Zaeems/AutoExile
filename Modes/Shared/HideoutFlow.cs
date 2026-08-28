@@ -141,9 +141,6 @@ namespace AutoExile.Modes.Shared
             }
 
             // ── Multi-item path (Wave Farming) ────────────────────────────
-            // When _withdrawList is set, compute which entries are still under-stocked
-            // and rebuild the StashSystem withdrawal list accordingly. This is the
-            // "withdraw scarabs + portals + maps each run" path.
             List<(string PathSubstring, int Count)>? activeWithdrawList = null;
             int totalNeededFromList = 0;
             if (_withdrawList != null && !string.IsNullOrWhiteSpace(_resourceTabName))
@@ -151,7 +148,9 @@ namespace AutoExile.Modes.Shared
                 activeWithdrawList = new List<(string, int)>();
                 foreach (var (path, target) in _withdrawList)
                 {
-                    var have = StashSystem.CountInventoryItems(ctx.Game, path);
+                    var have = path == StashSystem.BlightMapIdentifier
+                        ? StashSystem.CountBlightMaps(ctx.Game)
+                        : StashSystem.CountInventoryItems(ctx.Game, path);
                     var need = target - have;
                     if (need > 0)
                     {
@@ -163,7 +162,10 @@ namespace AutoExile.Modes.Shared
             }
 
             // Count fragments and non-fragment loot in inventory (single-item path)
-            int fragmentsInInventory = StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+            int fragmentsInInventory = _withdrawFragmentPath == StashSystem.BlightMapIdentifier
+                ? StashSystem.CountBlightMaps(ctx.Game)
+                : StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+
             int lootItems = StashSystem.CountNonMatchingItems(ctx.Game, _withdrawFragmentPath);
 
             // Only withdraw when below minimum needed — don't top up each run
@@ -180,7 +182,7 @@ namespace AutoExile.Modes.Shared
             // Not enough fragments and no way to get more — signal stop (only for modes that use fragments)
             if (usesFragments && fragmentsInInventory < minNeeded && !canWithdraw)
             {
-                Status = "No fragments in inventory";
+                Status = "No fragments/maps in inventory";
                 _phase = HideoutPhase.Idle;
                 return HideoutSignal.NoFragments;
             }
@@ -197,13 +199,12 @@ namespace AutoExile.Modes.Shared
                 ctx.Stash.Start(
                     storeTabName:         needStore    ? _dumpTabName          : null,
                     withdrawTabName:      needWithdraw ? _resourceTabName      : null,
-                    // Single-item fields only used when there's no multi-item list.
                     withdrawFragmentPath: needMultiWithdraw ? null : (needSingleWithdraw ? _withdrawFragmentPath : null),
                     withdrawCount:        needMultiWithdraw ? 0    : withdrawNeeded,
                     itemFilter:           needStore ? _stashItemFilter : (_ => false),
                     withdrawList:         activeWithdrawList);
                 var parts = new List<string>();
-                if (needSingleWithdraw) parts.Add($"withdraw {withdrawNeeded} fragments");
+                if (needSingleWithdraw) parts.Add($"withdraw {withdrawNeeded} items");
                 if (needMultiWithdraw)  parts.Add($"withdraw {totalNeededFromList} items ({activeWithdrawList!.Count} types)");
                 if (needStore) parts.Add($"stash {lootItems} loot items");
                 Status = string.Join(" & ", parts);
@@ -229,11 +230,14 @@ namespace AutoExile.Modes.Shared
                     // Verify we have enough fragments before proceeding to map device
                     if (!string.IsNullOrEmpty(_withdrawFragmentPath) && !string.IsNullOrEmpty(_resourceTabName))
                     {
-                        int frags = StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+                        int frags = _withdrawFragmentPath == StashSystem.BlightMapIdentifier
+                            ? StashSystem.CountBlightMaps(ctx.Game)
+                            : StashSystem.CountInventoryItems(ctx.Game, _withdrawFragmentPath);
+
                         int needed = _minFragments > 0 ? _minFragments : 1;
                         if (frags < needed)
                         {
-                            Status = $"Not enough fragments ({frags}/{needed}) — stopping";
+                            Status = $"Not enough maps/fragments ({frags}/{needed}) — stopping";
                             _phase = HideoutPhase.Idle;
                             return HideoutSignal.NoFragments;
                         }
