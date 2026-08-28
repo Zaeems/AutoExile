@@ -833,12 +833,21 @@ namespace AutoExile.Modes
 
         private void TickSweep(BotContext ctx)
         {
-            // Original completion logic: only advance when the game confirms the encounter is done
             if (_blight.IsEncounterDone)
             {
                 ctx.Navigation.Stop(ctx.Game);
                 EnterOpenChestsPhase();
                 StatusText = "Encounter complete — looting";
+                return;
+            }
+
+            // Safety guard: If timer is still running in-game, immediately cancel sweep and return to pump
+            if (!_blight.IsTimerDone)
+            {
+                ctx.Navigation.Stop(ctx.Game);
+                _phase = BlightPhase.TowerManagement;
+                _phaseStartTime = DateTime.Now;
+                StatusText = $"Timer still active ({_blight.CountdownText}) — returning to defend pump";
                 return;
             }
 

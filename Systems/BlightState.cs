@@ -466,21 +466,25 @@ namespace AutoExile.Systems
             LaneDebug = LaneTracker.GetDebugText();
         }
 
+        private int _timerMissingTicks;
+        private const int TimerMissingTicksThreshold = 45; // ~3 seconds of continuous missing before trusting expiration
         private void TrackCountdown(GameController gc)
         {
+            string rawText = "";
+
             try
             {
                 var countdownElement = gc.IngameState.IngameUi.Parent
                     .GetChildFromIndices(1, 25, 4, 0, 0, 0, 0);
-                CountdownText = countdownElement?.Text ?? "";
+                rawText = countdownElement?.Text ?? "";
             }
             catch
             {
-                CountdownText = "";
+                rawText = "";
             }
 
             // Fallback search if primary UI index was empty
-            if (string.IsNullOrEmpty(CountdownText))
+            if (string.IsNullOrEmpty(rawText))
             {
                 try
                 {
@@ -495,7 +499,7 @@ namespace AutoExile.Systems
                                 var text = child.Text.Trim();
                                 if (text.Length <= 5 && char.IsDigit(text[0]))
                                 {
-                                    CountdownText = text;
+                                    rawText = text;
                                     break;
                                 }
                             }
@@ -505,30 +509,74 @@ namespace AutoExile.Systems
                 catch { }
             }
 
-            // Detect timer done — countdown reaching zero
-            if (!IsTimerDone && IsEncounterActive)
+            CountdownText = rawText;
+
+            if (!IsEncounterActive)
+                return;
+
+            // Parse seconds remaining from "M:SS" or "MM:SS"
+            bool hasValidTimer = false;
+            int secondsRemaining = 0;
+
+            if (!string.IsNullOrEmpty(CountdownText))
             {
-                bool timerRunning = !string.IsNullOrEmpty(CountdownText) &&
-                    CountdownText.Trim() != "0:00" && CountdownText.Trim() != "00:00";
-
-                if (timerRunning)
+                var parts = CountdownText.Trim().Split(':');
+                if (parts.Length == 2 && int.TryParse(parts[0], out int mins) && int.TryParse(parts[1], out int secs))
                 {
-                    _wasTimerRunning = true;
+                    secondsRemaining = (mins * 60) + secs;
+                    hasValidTimer = true;
                 }
+            }
 
-                if (_wasTimerRunning && !timerRunning)
+            // 1. Timer is actively running with positive time remaining
+            if (hasValidTimer && secondsRemaining > 0)
+            {
+                _wasTimerRunning = true;
+                _timerMissingTicks = 0;
+                _timerCheckTicks = 0;
+
+                // Self-correct if IsTimerDone was falsely set earlier
+                if (IsTimerDone)
+                {
+                    IsTimerDone = false;
+                    TimerDoneAt = null;
+                }
+                return;
+            }
+
+            // 2. Timer explicitly reached zero ("0:00" / "00:00")
+            if (hasValidTimer && secondsRemaining == 0)
+            {
+                if (!IsTimerDone)
                 {
                     IsTimerDone = true;
                     TimerDoneAt ??= DateTime.Now;
                 }
-                else if (!_wasTimerRunning && !timerRunning)
+                return;
+            }
+
+            // 3. Timer UI is not found / missing
+            if (!hasValidTimer)
+            {
+                if (_wasTimerRunning)
                 {
+                    // Require sustained missing ticks before declaring timer done
+                    _timerMissingTicks++;
+                    if (_timerMissingTicks >= TimerMissingTicksThreshold)
+                    {
+                        if (!IsTimerDone)
+                        {
+                            IsTimerDone = true;
+                            TimerDoneAt ??= DateTime.Now;
+                        }
+                    }
+                }
+                else
+                {
+                    // Fresh map or re-entry where timer UI was never seen
                     var encounterAge = EncounterStartedAt.HasValue
                         ? (DateTime.Now - EncounterStartedAt.Value).TotalSeconds : 0;
 
-                    // On re-entry after death (DeathCount > 0), if 5s passed and no timer is running,
-                    // the timer finished while dead in hideout.
-                    // On fresh encounters (DeathCount == 0), wait 360s (6mins) before assuming timer done.
                     double requiredAge = DeathCount > 0 ? 5.0 : 360.0;
 
                     if (encounterAge > requiredAge)
@@ -536,8 +584,11 @@ namespace AutoExile.Systems
                         _timerCheckTicks++;
                         if (_timerCheckTicks > 30)
                         {
-                            IsTimerDone = true;
-                            TimerDoneAt ??= DateTime.Now;
+                            if (!IsTimerDone)
+                            {
+                                IsTimerDone = true;
+                                TimerDoneAt ??= DateTime.Now;
+                            }
                         }
                     }
                 }
