@@ -193,9 +193,9 @@ namespace AutoExile.Modes
             {
                 _state.Tick(gc, _settings.MinWaveDelaySeconds.Value);
 
-                // Combat is ONLY active while a wave is in progress during the WaveCycle phase
+                // Always allow combat to scan threats in map so enemies (including bosses on re-entry) are never missed
                 bool isWaveActive = _state.IsWaveActive || ctx.Combat.InCombat || ctx.Combat.NearbyMonsterCount > 0;
-                bool combatAllowed = _phase == SimPhase.WaveCycle && isWaveActive;
+                bool combatAllowed = _phase == SimPhase.WaveCycle || isWaveActive;
 
                 ctx.Combat.Profile.Enabled = combatAllowed;
 
@@ -684,7 +684,7 @@ namespace AutoExile.Modes
                     foreach (var it in slots)
                         if (KeepSimulacrumsFilter(it)) stashableCount++;
 
-                bool shouldStartStashing    = stashableCount >= ctx.Settings.Run.StashItemThreshold.Value;
+                bool shouldStartStashing = stashableCount >= ctx.Settings.Run.StashItemThreshold.Value;
                 bool shouldContinueStashing = _isStashing && stashableCount > 0;
 
                 if (shouldStartStashing || shouldContinueStashing)
@@ -1519,7 +1519,7 @@ namespace AutoExile.Modes
             }
         }
 
-        
+
     }
 
     public enum SimPhase

@@ -467,40 +467,48 @@ namespace AutoExile.Systems
         }
 
         private int _timerMissingTicks;
-        private const int TimerMissingTicksThreshold = 45; // ~3 seconds of continuous missing before trusting expiration
+        private const int TimerMissingTicksThreshold = 300; // ~5-10s of sustained missing frames before declaring done
+
         private void TrackCountdown(GameController gc)
         {
             string rawText = "";
 
             try
             {
-                var countdownElement = gc.IngameState.IngameUi.Parent
-                    .GetChildFromIndices(1, 25, 4, 0, 0, 0, 0);
-                rawText = countdownElement?.Text ?? "";
+                // Primary path
+                var countdownElement = gc.IngameState?.IngameUi?.Parent
+                    ?.GetChildFromIndices(1, 25, 4, 0, 0, 0, 0);
+                if (countdownElement != null && countdownElement.IsVisible && !string.IsNullOrEmpty(countdownElement.Text))
+                {
+                    rawText = countdownElement.Text;
+                }
             }
-            catch
-            {
-                rawText = "";
-            }
+            catch { }
 
-            // Fallback search if primary UI index was empty
+            // Fallback search across LeagueMechanic and IngameUi children
             if (string.IsNullOrEmpty(rawText))
             {
                 try
                 {
-                    var ui = gc.IngameState.IngameUi;
-                    var parent = ui.LeagueMechanicButtons?.Parent;
-                    if (parent != null)
+                    var ui = gc.IngameState?.IngameUi;
+                    if (ui != null)
                     {
-                        foreach (var child in parent.Children)
+                        var parent = ui.LeagueMechanicButtons?.Parent;
+                        if (parent != null)
                         {
-                            if (child?.IsVisible == true && !string.IsNullOrEmpty(child.Text) && child.Text.Contains(':'))
+                            rawText = FindTimerTextRecursive(parent, 0, 4);
+                        }
+
+                        if (string.IsNullOrEmpty(rawText))
+                        {
+                            for (int i = 0; i < ui.ChildCount && i < 50; i++)
                             {
-                                var text = child.Text.Trim();
-                                if (text.Length <= 5 && char.IsDigit(text[0]))
+                                var child = ui.GetChildAtIndex(i);
+                                if (child != null && child.IsVisible)
                                 {
-                                    rawText = text;
-                                    break;
+                                    rawText = FindTimerTextRecursive(child, 0, 3);
+                                    if (!string.IsNullOrEmpty(rawText))
+                                        break;
                                 }
                             }
                         }
@@ -520,7 +528,8 @@ namespace AutoExile.Systems
 
             if (!string.IsNullOrEmpty(CountdownText))
             {
-                var parts = CountdownText.Trim().Split(':');
+                var text = CountdownText.Trim();
+                var parts = text.Split(':');
                 if (parts.Length == 2 && int.TryParse(parts[0], out int mins) && int.TryParse(parts[1], out int secs))
                 {
                     secondsRemaining = (mins * 60) + secs;
@@ -535,7 +544,6 @@ namespace AutoExile.Systems
                 _timerMissingTicks = 0;
                 _timerCheckTicks = 0;
 
-                // Self-correct if IsTimerDone was falsely set earlier
                 if (IsTimerDone)
                 {
                     IsTimerDone = false;
@@ -560,7 +568,6 @@ namespace AutoExile.Systems
             {
                 if (_wasTimerRunning)
                 {
-                    // Require sustained missing ticks before declaring timer done
                     _timerMissingTicks++;
                     if (_timerMissingTicks >= TimerMissingTicksThreshold)
                     {
@@ -573,16 +580,16 @@ namespace AutoExile.Systems
                 }
                 else
                 {
-                    // Fresh map or re-entry where timer UI was never seen
                     var encounterAge = EncounterStartedAt.HasValue
-                        ? (DateTime.Now - EncounterStartedAt.Value).TotalSeconds : 0;
+                        ? (DateTime.Now - EncounterStartedAt.Value).TotalSeconds
+                        : 0;
 
-                    double requiredAge = DeathCount > 0 ? 5.0 : 360.0;
+                    double requiredAge = DeathCount > 0 ? 15.0 : 360.0;
 
                     if (encounterAge > requiredAge)
                     {
                         _timerCheckTicks++;
-                        if (_timerCheckTicks > 30)
+                        if (_timerCheckTicks > 60)
                         {
                             if (!IsTimerDone)
                             {
@@ -595,6 +602,37 @@ namespace AutoExile.Systems
             }
         }
 
+        private static string FindTimerTextRecursive(ExileCore.PoEMemory.Element? elem, int depth, int maxDepth)
+        {
+            if (elem == null || !elem.IsVisible || depth > maxDepth)
+                return "";
+
+            var text = elem.Text;
+            if (!string.IsNullOrEmpty(text))
+            {
+                var trimmed = text.Trim();
+                if (trimmed.Length >= 3 && trimmed.Length <= 5 && trimmed.Contains(':') && char.IsDigit(trimmed[0]))
+                {
+                    var parts = trimmed.Split(':');
+                    if (parts.Length == 2 && int.TryParse(parts[0], out _) && int.TryParse(parts[1], out _))
+                        return trimmed;
+                }
+            }
+
+            for (int i = 0; i < elem.ChildCount; i++)
+            {
+                var child = elem.GetChildAtIndex(i);
+                if (child != null && child.IsVisible)
+                {
+                    var res = FindTimerTextRecursive(child, depth + 1, maxDepth);
+                    if (!string.IsNullOrEmpty(res))
+                        return res;
+                }
+            }
+
+            return "";
+        }
+        
         private void TrackEncounterCompletion(GameController gc)
         {
             if (IsEncounterDone) return;

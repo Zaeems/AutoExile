@@ -596,34 +596,29 @@ namespace AutoExile.Modes
             {
                 _phase = BlightPhase.TowerManagement;
                 _phaseStartTime = DateTime.Now;
-                StatusText = "Timer still running — managing towers at pump";
+                StatusText = $"Timer still running ({_blight.CountdownText}) — defending pump";
                 return;
             }
 
             var elapsedAfterTimer = (DateTime.Now - _phaseStartTime).TotalSeconds;
             var sweepDelay = _settings.SweepDelayAfterTimerSeconds.Value;
 
-            const float StandAtTowerFallbackSeconds = 60f;
-            bool forceSweepFallback = elapsedAfterTimer >= StandAtTowerFallbackSeconds;
-
-            if (elapsedAfterTimer > sweepDelay && !forceSweepFallback)
+            if (_settings.StandAtTower.Value)
             {
-                if (_settings.StandAtTower.Value && _blight.AliveMonsterCount > 0)
+                // When StandAtTower is enabled, hold position while fighting nearby monsters
+                if (_blight.AliveMonsterCount > 0 && ctx.Combat.NearbyMonsterCount > 0)
                 {
                     TickSafetyPosition(ctx);
-                    var remainingFallback = Math.Max(0f, StandAtTowerFallbackSeconds - elapsedAfterTimer);
-                    StatusText = $"Standing at tower — waiting for monsters ({_blight.AliveMonsterCount} alive, sweep fallback in {remainingFallback:F0}s)";
+                    StatusText = $"Standing at tower — defending ({_blight.AliveMonsterCount} alive, {ctx.Combat.NearbyMonsterCount} nearby)";
                     return;
                 }
             }
 
-            if (elapsedAfterTimer > sweepDelay || forceSweepFallback)
+            if (elapsedAfterTimer > sweepDelay)
             {
                 CancelTowerAction(ctx);
                 EnterSweepPhase();
-                StatusText = forceSweepFallback
-                    ? $"1m fallback after timer — sweeping {_blight.AliveMonsterCount} stragglers"
-                    : "Timer done & delay passed — sweeping remaining monsters";
+                StatusText = "Timer finished & delay passed — sweeping remaining monsters";
                 return;
             }
 
@@ -636,7 +631,7 @@ namespace AutoExile.Modes
             else
             {
                 TickTowerLoop(ctx);
-                StatusText = $"Waiting — {_blight.AliveMonsterCount} monsters alive";
+                StatusText = $"Waiting — {_blight.AliveMonsterCount} monsters alive ({sweepDelay - elapsedAfterTimer:F0}s until sweep)";
             }
         }
 

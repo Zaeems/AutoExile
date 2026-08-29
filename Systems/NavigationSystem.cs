@@ -934,8 +934,8 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
-        /// Escape probing — try random directional probes at escalating distances.
-        /// When stuck at the same spot repeatedly, uses larger probe distances.
+        /// Escape probing — try directional probes at escalating distances using
+        /// Move-Only, non-terrain movement skills (dash), and terrain-crossing blink skills.
         /// </summary>
         private void EscapeProbe(GameController gc, Vector2 playerGrid)
         {
@@ -964,8 +964,62 @@ namespace AutoExile.Systems
             var screenPos = GridToScreen(gc, nudgeTarget);
             var windowRect = gc.Window.GetWindowRectangle();
 
-            ExecuteWalk(screenPos, windowRect);
-            LastRecoveryAction = $"Escape probe ({probeDistance:F0}g, attempt #{_stuckAtSameSpotCount})";
+            if (screenPos.X <= 0 || screenPos.X >= windowRect.Width ||
+                screenPos.Y <= 0 || screenPos.Y >= windowRect.Height)
+            {
+                var center = new Vector2(windowRect.Width / 2f, windowRect.Height / 2f);
+                var dir = screenPos - center;
+                if (dir.Length() > 1f)
+                    screenPos = center + Vector2.Normalize(dir) * Math.Min(center.X, center.Y) * 0.8f;
+            }
+
+            var absPos = new Vector2(windowRect.X + screenPos.X, windowRect.Y + screenPos.Y);
+
+            bool inSafeZone = gc.Area?.CurrentArea?.IsTown == true
+                || gc.Area?.CurrentArea?.IsHideout == true
+                || gc.Area?.CurrentArea?.Name == "The Rogue Harbour";
+
+            // If in a zone where skills are allowed, attempt movement skill unstick
+            if (!inSafeZone && !WalkOnly && BotInput.CanAct)
+            {
+                // Stage 1: Try terrain-crossing blink (highest escape potential across ledges/corners/traps)
+                var gapCrosser = MovementSkills.FirstOrDefault(m => m.CanCrossTerrain && m.IsReady &&
+                    (m.MinCastIntervalMs <= 0 || (DateTime.Now - m.LastUsedAt).TotalMilliseconds >= m.MinCastIntervalMs));
+
+                if (gapCrosser != null && (_stuckAtSameSpotCount >= 2 || _rng.Next(2) == 0))
+                {
+                    if (BotInput.CursorPressKey(absPos, gapCrosser.Key))
+                    {
+                        gapCrosser.LastUsedAt = DateTime.Now;
+                        _dashActive = true;
+                        _dashStartTime = DateTime.Now;
+                        LastRecoveryAction = $"Unstuck Blink ({gapCrosser.Key}, probe {probeDistance:F0}g, attempt #{_stuckAtSameSpotCount})";
+                        return;
+                    }
+                }
+
+                // Stage 2: Try standard dash/movement skill (non-terrain crosser like Shield Charge/Whirling Blades/Dash)
+                var dashSkill = MovementSkills.FirstOrDefault(m => !m.CanCrossTerrain && m.IsReady &&
+                    (m.MinCastIntervalMs <= 0 || (DateTime.Now - m.LastUsedAt).TotalMilliseconds >= m.MinCastIntervalMs));
+
+                if (dashSkill != null)
+                {
+                    if (BotInput.CursorPressKey(absPos, dashSkill.Key))
+                    {
+                        dashSkill.LastUsedAt = DateTime.Now;
+                        _dashActive = true;
+                        _dashStartTime = DateTime.Now;
+                        LastRecoveryAction = $"Unstuck Dash ({dashSkill.Key}, probe {probeDistance:F0}g, attempt #{_stuckAtSameSpotCount})";
+                        return;
+                    }
+                }
+            }
+
+            // Stage 3: Force restart Move-Only movement (re-presses the key rather than just steering mouse)
+            var moveKey = MoveKey != Keys.None ? MoveKey : Keys.T;
+            BotInput.StopMovement();
+            BotInput.StartMovement(absPos, moveKey);
+            LastRecoveryAction = $"Unstuck MoveKey ({moveKey}, probe {probeDistance:F0}g, attempt #{_stuckAtSameSpotCount})";
         }
 
         // ═══════════════════════════════════════════════════

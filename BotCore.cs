@@ -591,6 +591,7 @@ namespace AutoExile
             if ((DateTime.Now - _lastEntityPrune).TotalMilliseconds > 1000)
             {
                 _entityCache.Prune();
+                _entityCache.SyncWithGame(GameController.EntityListWrapper.OnlyValidEntities);
                 _lastEntityPrune = DateTime.Now;
             }
 
