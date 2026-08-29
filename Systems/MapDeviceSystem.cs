@@ -1,10 +1,15 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+using System.Windows.Forms;
 using ExileCore;
 using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Components;
+using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
-using System.Numerics;
-using System.Windows.Forms;
+using ImGuiNET;
 
 namespace AutoExile.Systems
 {
@@ -18,82 +23,32 @@ namespace AutoExile.Systems
         private DateTime _phaseStartTime;
         private DateTime _lastActionTime;
         private Func<Element, bool>? _mapFilter;
-        private string? _inventoryFragmentPath; // fallback: right-click from inventory if stash has none
+        private string? _inventoryFragmentPath;
         private const float ActionCooldownMs = 400;
         private const float BasePhaseTimeoutSeconds = 30f;
         private const float BasePortalWaitTimeoutSeconds = 10f;
-        /// <summary>Extra seconds added to all server-response timeouts. Synced from settings.</summary>
+
         public float ExtraLatencySec { get; set; }
-        /// <summary>Max click retry attempts. Synced from settings.</summary>
         public int MaxClickAttempts { get; set; } = 5;
-
-        /// <summary>
-        /// Grid distance considered "close enough" to interact with device/portal.
-        /// Synced from InteractionSystem.InteractRadius (which comes from LootRadius setting).
-        /// </summary>
         public float InteractRadius { get; set; } = 20f;
-
-        /// <summary>InteractionSystem reference for portal clicking. Synced from BotCore.</summary>
         public InteractionSystem? Interaction { get; set; }
-
-        /// <summary>
-        /// Target map name to select in the atlas (e.g., "Mausoleum").
-        /// When set, the system clicks the correct atlas node before selecting a map from stash.
-        /// Strip any "★ " prefix before setting.
-        /// </summary>
         public string? TargetMapName { get; set; }
-
-        /// <summary>
-        /// Minimum map tier to accept from the stash. 0 = any tier.
-        /// </summary>
         public int MinMapTier { get; set; }
-
-        /// <summary>
-        /// When true, always use Ctrl+click to insert maps (farming mode).
-        /// When false, use right-click for unnamed maps (boss fragment mode).
-        /// </summary>
         public bool ForceCtrlClick { get; set; }
-
-        /// <summary>
-        /// Item path substrings to insert into the device's scarab slots after the map
-        /// is loaded but before activation. Each entry contributes one ctrl+click on a
-        /// matching inventory item — the device auto-fills the next empty slot.
-        /// Empty/null = skip the scarab insertion phase entirely.
-        /// </summary>
         public IReadOnlyList<string>? ScarabPaths { get; set; }
 
-        // Navigation to device — track failed close-approach attempts
         private int _navAttempts;
         private float _bestDistSeen = float.MaxValue;
-
-        // Atlas node selection state
         private bool _nodeSelected;
         private int _nodeClickAttempts;
-
-        // Inventory fragment fallback
         private int _invOpenAttempts;
         private const int MaxInvOpenAttempts = 5;
-
-        /// <summary>
-        /// After a Ctrl+click or right-click on a map/fragment, wait at least this
-        /// long before re-evaluating insertion state. Gives the device UI time to
-        /// render the loaded item + activate button. Without this, fast tick rates
-        /// re-enter the select phase before slot 0 / the activate button updates,
-        /// causing the bot to click again and double-load (or close the panel).
-        /// </summary>
         private const int InsertSettleMs = 800;
-
-        // Portal spawn settle
         private DateTime? _portalFirstSeenAt;
 
         private bool CanAct() =>
             BotInput.CanAct && (DateTime.Now - _lastActionTime).TotalMilliseconds >= ActionCooldownMs;
 
-        // UI element indices for atlas panel
-        // Map stash: atlas[3][0][1] — children are InventoryItem elements
-        // Device slots: atlas[7][0][2] — 6 slots, occupied slot has ChildCount==2, child[1] is the item
-        // Activate button: atlas[7][0][3] — child[0].Text == "activate"
-        // Map name text: atlas[7][0][1][0][0] — verifies correct node selected
         private static readonly int[] MapStashPath = { 3, 0, 1 };
         private static readonly int[] DeviceSlotsPath = { 7, 0, 2 };
         private static readonly int[] ActivateButtonPath = { 7, 0, 3 };
@@ -103,11 +58,6 @@ namespace AutoExile.Systems
         public string Status { get; private set; } = "";
         public bool IsBusy => _phase != MapDevicePhase.Idle;
 
-        /// <summary>
-        /// Start the map creation flow with a filter for which map to select.
-        /// The filter receives each InventoryItem element from the map stash
-        /// and should return true for the desired map type.
-        /// </summary>
         public bool Start(Func<Element, bool> mapFilter, string? inventoryFragmentPath = null,
             IReadOnlyList<string>? scarabPaths = null)
         {
@@ -116,8 +66,6 @@ namespace AutoExile.Systems
 
             _mapFilter = mapFilter;
             _inventoryFragmentPath = inventoryFragmentPath;
-            // Reset scarab list every Start() — caller must opt in each run, otherwise
-            // a stale wave-farm config could insert scarabs into a Boss/Sim device.
             ScarabPaths = scarabPaths;
             _phase = MapDevicePhase.NavigateToDevice;
             _phaseStartTime = DateTime.Now;
@@ -128,6 +76,16 @@ namespace AutoExile.Systems
             _nodeClickAttempts = 0;
             _invOpenAttempts = 0;
             _portalFirstSeenAt = null;
+
+            if (string.IsNullOrEmpty(TargetMapName))
+            {
+                if (_mapFilter == IsBlightRavagedMap || _inventoryFragmentPath == StashSystem.BlightRavagedMapIdentifier ||
+                    _mapFilter == IsBlightedMap || _inventoryFragmentPath == StashSystem.BlightMapIdentifier)
+                {
+                    TargetMapName = "Blighted Lands";
+                }
+            }
+
             Status = "Starting map creation";
             return true;
         }
@@ -145,10 +103,6 @@ namespace AutoExile.Systems
             Status = "Cancelled";
         }
 
-        /// <summary>
-        /// Tick the state machine. Call every frame while IsBusy.
-        /// Returns result when complete or failed.
-        /// </summary>
         public MapDeviceResult Tick(GameController gc, NavigationSystem nav)
         {
             if (_phase == MapDevicePhase.Idle)
@@ -156,7 +110,6 @@ namespace AutoExile.Systems
 
             var phaseElapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
 
-            // Phase timeout
             if (phaseElapsed > BasePhaseTimeoutSeconds + ExtraLatencySec
                 && _phase != MapDevicePhase.WaitForPortals)
             {
@@ -165,7 +118,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // Action cooldown
             if ((DateTime.Now - _lastActionTime).TotalMilliseconds < ActionCooldownMs)
                 return MapDeviceResult.InProgress;
 
@@ -182,25 +134,21 @@ namespace AutoExile.Systems
             };
         }
 
-        // --- Phase: Navigate to map device ---
-
         private MapDeviceResult TickNavigateToDevice(GameController gc, NavigationSystem nav)
         {
-            // Wait for stash/inventory panels to close before proceeding
             var stashVisible = gc.IngameState.IngameUi.StashElement?.IsVisible == true;
             var invVisible = gc.IngameState.IngameUi.InventoryPanel?.IsVisible == true;
             if (stashVisible || invVisible)
             {
                 var sent = BotInput.PressKey(Keys.Escape);
                 _lastActionTime = DateTime.Now;
-                Status = $"[Nav] Closing panels (stash={stashVisible} inv={invVisible} sent={sent} canAct={BotInput.CanAct})";
+                Status = $"[Nav] Closing panels (stash={stashVisible} inv={invVisible})";
                 return MapDeviceResult.InProgress;
             }
 
             var device = FindMapDevice(gc);
             if (device == null)
             {
-                // Grace period — entity list may not be populated yet on first frames
                 if ((DateTime.Now - _phaseStartTime).TotalSeconds < 3)
                 {
                     Status = $"[Nav] Searching for map device ({(DateTime.Now - _phaseStartTime).TotalSeconds:F0}s)...";
@@ -211,7 +159,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // Check if atlas is already open
             var atlas = gc.IngameState.IngameUi.Atlas;
             if (atlas?.IsVisible == true)
             {
@@ -221,7 +168,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Distance check in grid units
             var playerGrid = gc.Player.GridPosNum;
             var deviceGrid = device.GridPosNum;
             var dist = Vector2.Distance(
@@ -233,7 +179,6 @@ namespace AutoExile.Systems
 
             if (dist < InteractRadius)
             {
-                // Close enough — switch to clicking the device
                 nav.Stop(gc);
                 _phase = MapDevicePhase.OpenDevice;
                 _phaseStartTime = DateTime.Now;
@@ -245,9 +190,6 @@ namespace AutoExile.Systems
             {
                 _navAttempts++;
 
-                // After first nav attempt completes, the device may be on unwalkable
-                // terrain (e.g., hideout decorations). A* snaps to the nearest walkable
-                // cell, so we can't get closer. Accept current position if within 2x radius.
                 if (_navAttempts > 1 && _bestDistSeen < InteractRadius * 2)
                 {
                     nav.Stop(gc);
@@ -261,9 +203,6 @@ namespace AutoExile.Systems
                 var success = nav.NavigateTo(gc, gridTarget);
                 if (!success)
                 {
-                    // A* can't find a path — common in hideouts where decorations create
-                    // fake walls on the pathfinding grid. Fall back to direct walk-toward:
-                    // just aim cursor at the device and press move key.
                     if (gc.Area.CurrentArea.IsHideout && BotInput.CanAct)
                     {
                         var screenPos = gc.IngameState.Camera.WorldToScreen(device.BoundsCenterPosNum);
@@ -287,8 +226,6 @@ namespace AutoExile.Systems
             return MapDeviceResult.InProgress;
         }
 
-        // --- Phase: Click to open the atlas panel ---
-
         private MapDeviceResult TickOpenDevice(GameController gc)
         {
             var atlas = gc.IngameState.IngameUi.Atlas;
@@ -308,7 +245,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // Click the device — bounds-based randomization to avoid overlapping entities
             if (!BotInput.ClickEntity(gc, device))
             {
                 Status = "[Open] Device off screen or gate blocked";
@@ -318,8 +254,6 @@ namespace AutoExile.Systems
             Status = "[Open] Clicking device";
             return MapDeviceResult.InProgress;
         }
-
-        // --- Phase: Select map node + insert map from stash ---
 
         private MapDeviceResult TickSelectMap(GameController gc)
         {
@@ -331,7 +265,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Failed;
             }
 
-            // PRIMARY check — if the activate button is showing, something is loaded
             if (IsActivateButtonReady(atlas))
             {
                 _phase = NextPhaseAfterMapLoaded();
@@ -342,7 +275,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Secondary check — slot 0 occupied
             if (IsMapInDevice(atlas))
             {
                 _phase = NextPhaseAfterMapLoaded();
@@ -353,7 +285,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Settle window after click
             if ((DateTime.Now - _lastActionTime).TotalMilliseconds < InsertSettleMs)
             {
                 Status = $"[Select] Waiting {InsertSettleMs}ms for device to update after click";
@@ -384,7 +315,8 @@ namespace AutoExile.Systems
                     var nameEl = atlas.GetChildFromIndices(MapNameTextPath);
                     var expectedName = StripMapPrefix(TargetMapName);
                     if (nameEl?.Text != null &&
-                        nameEl.Text.Equals(expectedName, StringComparison.OrdinalIgnoreCase))
+                        (nameEl.Text.Equals(expectedName, StringComparison.OrdinalIgnoreCase) ||
+                         nameEl.Text.Contains("Blight", StringComparison.OrdinalIgnoreCase)))
                     {
                         _nodeSelected = true;
                         Status = $"[Select] {TargetMapName} confirmed selected";
@@ -401,7 +333,6 @@ namespace AutoExile.Systems
                 }
             }
 
-            // Find a matching map from the Atlas stash
             var mapStash = atlas.GetChildFromIndices(MapStashPath);
             if (mapStash == null)
             {
@@ -426,7 +357,6 @@ namespace AutoExile.Systems
                 break;
             }
 
-            // Fallback: check player inventory for the map / fragment
             if (targetMap == null && (_inventoryFragmentPath != null || _mapFilter != null))
             {
                 if (!CanAct()) return MapDeviceResult.InProgress;
@@ -434,13 +364,19 @@ namespace AutoExile.Systems
                 var invPanel = gc.IngameState.IngameUi.InventoryPanel;
                 if (invPanel == null || !invPanel.IsVisible)
                 {
+                    if (namedMapFlow && _invOpenAttempts >= 2)
+                    {
+                        return TickSelectAtlasNode(gc, atlas);
+                    }
+
                     if (_invOpenAttempts > MaxInvOpenAttempts)
                     {
                         Status = "[Select] Failed to open inventory panel";
                         _phase = MapDevicePhase.Idle;
                         return MapDeviceResult.Failed;
                     }
-                    if (BotInput.PressKey(System.Windows.Forms.Keys.I))
+
+                    if (BotInput.PressKey(Keys.I))
                     {
                         _invOpenAttempts++;
                         _lastActionTime = DateTime.Now;
@@ -528,14 +464,10 @@ namespace AutoExile.Systems
 
             return MapDeviceResult.InProgress;
         }
-        
+
         private DateTime _lastSearchPastedAt = DateTime.MinValue;
         private string _lastSearchedMapName = "";
 
-        /// <summary>
-        /// Search for the target map on the Atlas, find the node whose Tooltip/Entity matches
-        /// the exact map name (e.g. "Jungle Valley"), and click it.
-        /// </summary>
         private MapDeviceResult TickSelectAtlasNode(GameController gc, Element atlas)
         {
             if (_nodeClickAttempts >= MaxClickAttempts)
@@ -556,17 +488,13 @@ namespace AutoExile.Systems
             }
 
             var windowRect = gc.Window.GetWindowRectangle();
-
-            // ── Step 1: Find node by exact Tooltip text or Entity path ──
             var targetNode = FindTargetMapNode(canvas, cleanTargetName);
 
-            // ── Step 2: If found on screen, click it directly ───────────
             if (targetNode != null)
             {
                 var rect = targetNode.GetClientRect();
                 var clickPos = new Vector2(windowRect.X + rect.Center.X, windowRect.Y + rect.Center.Y);
 
-                // Verify the node is within screen bounds
                 if (rect.Center.X > 20 && rect.Center.X < windowRect.Width - 20 &&
                     rect.Center.Y > 20 && rect.Center.Y < windowRect.Height - 50)
                 {
@@ -580,12 +508,11 @@ namespace AutoExile.Systems
                 }
             }
 
-            // ── Step 3: If not found or off-screen, search via Ctrl+F to center/highlight ──
             if (_lastSearchedMapName != cleanTargetName || (DateTime.Now - _lastSearchPastedAt).TotalSeconds > 4.0)
             {
                 try
                 {
-                    ImGuiNET.ImGui.SetClipboardText(cleanTargetName);
+                    ImGui.SetClipboardText(cleanTargetName);
 
                     // Ctrl + F
                     ExileCore.Input.KeyDown(Keys.ControlKey);
@@ -624,9 +551,6 @@ namespace AutoExile.Systems
             return MapDeviceResult.InProgress;
         }
 
-        /// <summary>
-        /// Scan canvas elements to find the node whose Tooltip or Entity matches target map name.
-        /// </summary>
         private static Element? FindTargetMapNode(Element canvas, string targetMapName)
         {
             if (canvas == null) return null;
@@ -638,13 +562,11 @@ namespace AutoExile.Systems
                 var child = canvas.GetChildAtIndex(i);
                 if (child == null || !child.IsVisible) continue;
 
-                // 1. Check Tooltip (contains "Jungle Valley Map", "Tier 16", etc.)
                 if (child.Tooltip != null && TooltipMatchesMap(child.Tooltip, targetMapName))
                 {
                     return child;
                 }
 
-                // 2. Check Entity path / metadata (e.g. ".../JungleValley")
                 try
                 {
                     var entity = child.Entity;
@@ -668,9 +590,6 @@ namespace AutoExile.Systems
             return null;
         }
 
-        /// <summary>
-        /// Recursively inspect Tooltip element and its children for map name.
-        /// </summary>
         private static bool TooltipMatchesMap(Element? tooltip, string targetMapName)
         {
             if (tooltip == null) return false;
@@ -693,60 +612,11 @@ namespace AutoExile.Systems
             return false;
         }
 
-        private static string GetElementTextRecursive(Element? el)
-        {
-            if (el == null) return "";
-            var sb = new System.Text.StringBuilder();
-            if (!string.IsNullOrEmpty(el.Text))
-                sb.Append(el.Text).Append(' ');
-            for (int i = 0; i < el.ChildCount; i++)
-            {
-                var child = el.GetChildAtIndex(i);
-                if (child != null)
-                    sb.Append(GetElementTextRecursive(child)).Append(' ');
-            }
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Recursively scan Atlas canvas elements to locate the node matching target map name.
-        /// </summary>
-        private static Element? FindNodeByName(Element? parent, string targetName, SharpDX.RectangleF windowRect)
-        {
-            if (parent == null) return null;
-
-            // Direct text match on this element
-            if (!string.IsNullOrEmpty(parent.Text) && parent.Text.Contains(targetName, StringComparison.OrdinalIgnoreCase))
-            {
-                var rect = parent.GetClientRect();
-                if (rect.Center.X > 50 && rect.Center.X < windowRect.Width - 50 &&
-                    rect.Center.Y > 50 && rect.Center.Y < windowRect.Height - 50)
-                {
-                    return parent;
-                }
-            }
-
-            // Check children
-            for (int i = 0; i < parent.ChildCount; i++)
-            {
-                var child = parent.GetChildAtIndex(i);
-                if (child == null || !child.IsVisible) continue;
-
-                var found = FindNodeByName(child, targetName, windowRect);
-                if (found != null) return found;
-            }
-
-            return null;
-        }
-
-        // --- Phase: Click activate ---
-
         private MapDeviceResult TickActivate(GameController gc)
         {
             var atlas = gc.IngameState.IngameUi.Atlas;
             if (atlas?.IsVisible != true)
             {
-                // Atlas closed — portals may have spawned
                 _phase = MapDevicePhase.WaitForPortals;
                 _phaseStartTime = DateTime.Now;
                 Status = "Atlas closed — waiting for portals";
@@ -760,14 +630,8 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Don't click a greyed-out button — it'll register a fake "click" with
-            // no effect and leave us spinning in WaitForPortals forever. The button
-            // becomes IsActive==true only after a map is loaded into slot 0.
             if (!activateBtn.IsActive)
             {
-                // Bounce back to SelectMap so the map-insertion path runs again.
-                // Common case: bot inserted scarabs but the map insertion never
-                // actually landed (mapStash empty + inventory fallback didn't fire).
                 Status = "Activate button greyed out — no map loaded; returning to map selection";
                 _phase = MapDevicePhase.SelectMap;
                 _phaseStartTime = DateTime.Now;
@@ -780,14 +644,9 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
             _lastActionTime = DateTime.Now;
-
-            // Stay in Activate phase — next tick will detect atlas closing (lines above)
-            // and transition to WaitForPortals only after verification
             Status = "Clicked activate — waiting for atlas to close";
             return MapDeviceResult.InProgress;
         }
-
-        // --- Phase: Wait for portals to appear ---
 
         private MapDeviceResult TickWaitForPortals(GameController gc)
         {
@@ -801,8 +660,6 @@ namespace AutoExile.Systems
             var portal = FindNearestPortal(gc);
             if (portal != null)
             {
-                // Wait 1s after first portal appears for all 6 to spawn,
-                // so we can pick the best (southmost) one
                 if (!_portalFirstSeenAt.HasValue)
                 {
                     _portalFirstSeenAt = DateTime.Now;
@@ -826,11 +683,8 @@ namespace AutoExile.Systems
             return MapDeviceResult.InProgress;
         }
 
-        // --- Phase: Click a portal to enter the map ---
-
         private MapDeviceResult TickEnterPortal(GameController gc, NavigationSystem nav)
         {
-            // Check if we're loading (means we entered)
             if (gc.IsLoading)
             {
                 Interaction?.Cancel(gc);
@@ -842,7 +696,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Succeeded;
             }
 
-            // Check if we left hideout
             if (!gc.Area.CurrentArea.IsHideout)
             {
                 Interaction?.Cancel(gc);
@@ -854,7 +707,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.Succeeded;
             }
 
-            // Close UI panels that block portal clicks
             var stashBlocking = gc.IngameState.IngameUi.StashElement?.IsVisible == true;
             var invBlocking = gc.IngameState.IngameUi.InventoryPanel?.IsVisible == true;
             if (stashBlocking || invBlocking)
@@ -865,21 +717,14 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Delegate to InteractionSystem — handles navigate, proximity, click, verify.
-            // InteractionSystem is already ticked by the mode each frame; we just
-            // start the interaction and monitor IsBusy / status.
             if (Interaction != null)
             {
                 if (Interaction.IsBusy)
                 {
                     Status = $"[Enter] {Interaction.Status}";
-                    // Area change / loading detection above handles success
                     return MapDeviceResult.InProgress;
                 }
 
-                // Interaction finished without area change — it either failed or
-                // succeeded but the entity vanished (portal consumed). Check if
-                // we're still in hideout — if so, retry with fresh portal reference.
                 var portal = FindNearestPortal(gc);
                 if (portal == null)
                 {
@@ -893,13 +738,10 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Fallback if Interaction not wired (shouldn't happen)
             Status = "[Enter] No InteractionSystem available";
             _phase = MapDevicePhase.Idle;
             return MapDeviceResult.Failed;
         }
-
-        // --- Helpers ---
 
         private Entity? FindMapDevice(GameController gc)
         {
@@ -912,12 +754,9 @@ namespace AutoExile.Systems
                     if (!entity.IsTargetable)
                         continue;
 
-                    // Primary: RenderName exactly "Map Device" — works for standard and variant devices
-                    // (variant decorative piece is "Map Device 1", so exact match avoids it)
                     if (entity.RenderName == "Map Device")
                         return entity;
 
-                    // Fallback: standard map device by path (legacy detection)
                     if (fallback == null && entity.Type == EntityType.IngameIcon &&
                         entity.Path != null && entity.Path.Contains("MappingDevice"))
                         fallback = entity;
@@ -925,7 +764,6 @@ namespace AutoExile.Systems
             }
             catch (IndexOutOfRangeException)
             {
-                // ExileCore entity component dictionary can race during entity load/unload — retry next tick
                 return null;
             }
 
@@ -940,41 +778,22 @@ namespace AutoExile.Systems
             var slots = atlas.GetChildFromIndices(DeviceSlotsPath);
             if (slots == null) return false;
 
-            // Slot 0 has ChildCount==2 when occupied (child[1] is the InventoryItem)
             var slot0 = slots.GetChildAtIndex(0);
             return slot0 != null && slot0.ChildCount >= 2;
         }
 
-        /// <summary>
-        /// Activate button is READY (clickable, not greyed-out) iff its
-        /// <c>IsActive</c> flag is true. The element's <c>IsVisible</c> stays
-        /// true the entire time the device panel is open — the disabled button
-        /// is rendered, just unclickable. Using IsVisible as the readiness check
-        /// makes the bot think activation succeeded (button "visible") and skip
-        /// map insertion + spin in WaitForPortals forever.
-        /// </summary>
         private bool IsActivateButtonReady(Element atlas)
         {
             var btn = atlas.GetChildFromIndices(ActivateButtonPath);
             return btn != null && btn.IsVisible && btn.IsActive;
         }
 
-        /// <summary>
-        /// Strip the web UI's "★ " supported-map marker (and any leading whitespace)
-        /// from a map name so it matches the bare names that the game's AtlasNodes
-        /// and device panel return.
-        /// </summary>
         private static string? StripMapPrefix(string? name)
         {
             if (string.IsNullOrEmpty(name)) return name;
             return name.TrimStart('★', ' ', '\u00a0').Trim();
         }
 
-        /// <summary>
-        /// After the map is loaded into the device, decide the next phase. If the
-        /// caller supplied scarab paths, route through <see cref="MapDevicePhase.InsertScarabs"/>
-        /// first; otherwise jump straight to <see cref="MapDevicePhase.Activate"/>.
-        /// </summary>
         private MapDevicePhase NextPhaseAfterMapLoaded()
         {
             return ScarabPaths != null && ScarabPaths.Count > 0
@@ -982,11 +801,6 @@ namespace AutoExile.Systems
                 : MapDevicePhase.Activate;
         }
 
-        /// <summary>
-        /// Count empty scarab slots (device slots 1-5; slot 0 is the map). Returns 0
-        /// when the slots panel is missing — caller should fall through to activate
-        /// rather than spinning.
-        /// </summary>
         private int CountEmptyScarabSlots(Element atlas)
         {
             var slots = atlas.GetChildFromIndices(DeviceSlotsPath);
@@ -1000,28 +814,17 @@ namespace AutoExile.Systems
             return empty;
         }
 
-        // --- Phase: Insert scarabs from inventory into device slots ---
-
-        /// <summary>
-        /// Insert scarabs from inventory by ctrl+clicking each one. The game auto-fills
-        /// the next empty device slot per click — no per-slot targeting needed. Loops
-        /// until either every configured-path inventory item has been clicked, or all
-        /// 5 device scarab slots are full, or no matching inventory item remains.
-        /// </summary>
         private MapDeviceResult TickInsertScarabs(GameController gc)
         {
             var atlas = gc.IngameState.IngameUi.Atlas;
             if (atlas?.IsVisible != true)
             {
-                // Atlas closed — UI race, fall through. WaitForPortals will pick up.
                 _phase = MapDevicePhase.Activate;
                 _phaseStartTime = DateTime.Now;
                 Status = "[Scarabs] Atlas closed — proceeding to activate";
                 return MapDeviceResult.InProgress;
             }
 
-            // No scarabs configured — shouldn't happen since we only enter this phase
-            // when ScarabPaths is non-empty, but defend anyway.
             if (ScarabPaths == null || ScarabPaths.Count == 0)
             {
                 _phase = MapDevicePhase.Activate;
@@ -1029,16 +832,12 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Settle window after each ctrl+click — same reason as map insertion: the
-            // device UI takes time to re-render slot occupancy. Without this we'd
-            // double-click and over-stuff slots.
             if ((DateTime.Now - _lastActionTime).TotalMilliseconds < InsertSettleMs)
             {
                 Status = $"[Scarabs] Waiting {InsertSettleMs}ms for slot to update";
                 return MapDeviceResult.InProgress;
             }
 
-            // All 5 scarab slots full → done.
             int empty = CountEmptyScarabSlots(atlas);
             if (empty <= 0)
             {
@@ -1048,7 +847,6 @@ namespace AutoExile.Systems
                 return MapDeviceResult.InProgress;
             }
 
-            // Find the first matching inventory item.
             var invItems = gc.IngameState.ServerData?.PlayerInventories?[0]?.Inventory?.InventorySlotItems;
             if (invItems == null)
             {
@@ -1098,11 +896,6 @@ namespace AutoExile.Systems
             return MapDeviceResult.InProgress;
         }
 
-        // --- Static map filter helpers ---
-
-        /// <summary>
-        /// Filter for standard blighted maps (has InfectedMap mod, NOT UberInfectedMap).
-        /// </summary>
         public static bool IsBlightedMap(Element item)
         {
             var entity = item.Entity;
@@ -1113,9 +906,6 @@ namespace AutoExile.Systems
                    !mods.ItemMods.Any(m => m.RawName.StartsWith("UberInfectedMap"));
         }
 
-        /// <summary>
-        /// Filter for blight-ravaged maps (has UberInfectedMap mod).
-        /// </summary>
         public static bool IsBlightRavagedMap(Element item)
         {
             var entity = item.Entity;
@@ -1125,17 +915,11 @@ namespace AutoExile.Systems
             return mods.ItemMods.Any(m => m.RawName.StartsWith("UberInfectedMap"));
         }
 
-        /// <summary>
-        /// Filter for any blighted or blight-ravaged map.
-        /// </summary>
         public static bool IsAnyBlightMap(Element item)
         {
             return IsBlightedMap(item) || IsBlightRavagedMap(item);
         }
 
-        /// <summary>
-        /// Filter for simulacrum fragments.
-        /// </summary>
         public static bool IsSimulacrum(Element item)
         {
             var entity = item.Entity;
@@ -1143,15 +927,12 @@ namespace AutoExile.Systems
             return entity.Path?.EndsWith("CurrencyAfflictionFragment") == true;
         }
 
-        /// <summary>
-        /// Filter for any standard map (not blighted, not simulacrum).
-        /// </summary>
         public static bool IsStandardMap(Element item)
         {
             var entity = item.Entity;
             if (entity == null) return false;
             if (!entity.Path?.Contains("Maps/MapKey") == true) return false;
-            if (!entity.TryGetComponent<Mods>(out var mods)) return true; // no mods = normal map
+            if (!entity.TryGetComponent<Mods>(out var mods)) return true;
             var modNames = mods.ItemMods;
             if (modNames == null) return true;
             return !modNames.Any(m => m.RawName == "InfectedMap" || m.RawName.StartsWith("UberInfectedMap"));

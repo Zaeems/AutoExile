@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
 using ExileCore;
 using ExileCore.PoEMemory;
 using ExileCore.PoEMemory.Components;
@@ -6,7 +10,6 @@ using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using AutoExile.Systems;
 using AutoExile.Modes.Shared;
-using System.Numerics;
 
 namespace AutoExile.Modes
 {
@@ -47,8 +50,8 @@ namespace AutoExile.Modes
         private int _currentPatrolLaneIndex;
         private readonly HashSet<int> _sweptLaneIndices = new();
         private DateTime _lanePatrolStartedAt = DateTime.MinValue;
-        private const float LanePatrolTimeoutSeconds = 25f;  // Allow full travel on long lanes
-        private const float EndpointOverlapRadius = 40f;     // Mark overlapping lanes as swept
+        private const float LanePatrolTimeoutSeconds = 25f;
+        private const float EndpointOverlapRadius = 40f;
         private DateTime _sweepCombatEngageTime = DateTime.MinValue;
         private int _sweepCombatEngageCount;
         private const float SweepCombatStuckSeconds = 15f;
@@ -57,7 +60,7 @@ namespace AutoExile.Modes
         private int _pumpClickAttempts;
         private DateTime _lastPumpClickAt = DateTime.MinValue;
         private const int MaxPumpClickAttempts = 6;
-        private const float PumpClickVerifyDelayMs = 1500f; // wait after click before retrying
+        private const float PumpClickVerifyDelayMs = 1500f;
 
         // Action cooldown for major actions (pump click, fast-forward)
         private const float MajorActionCooldownMs = 500f;
@@ -65,7 +68,7 @@ namespace AutoExile.Modes
         // Hideout/loop tracking
         private bool _mapCompleted;
         private string _lastMapAreaName = "";
-        private const int MaxDeaths = 5; // give up after this many deaths per map
+        private const int MaxDeaths = 5;
 
         // Public for ImGui display
         public BlightState State => _blight;
@@ -79,17 +82,19 @@ namespace AutoExile.Modes
         {
             bool ravaged = _settings.RunBlightRavaged.Value;
             string mapIdentifier = ravaged ? StashSystem.BlightRavagedMapIdentifier : StashSystem.BlightMapIdentifier;
+            string targetMapName = "Blighted Lands";
 
             _hideoutFlow.Start(
                 mapFilter: ravaged ? MapDeviceSystem.IsBlightRavagedMap : MapDeviceSystem.IsBlightedMap,
                 stashItemFilter: item => !StashSystem.IsBlightMapEntity(item.Item, ravagedOnly: ravaged),
+                targetMapName: targetMapName,
                 inventoryFragmentPath: mapIdentifier,
                 dumpTabName: ctx.Settings.Stash.DumpTabName.Value,
                 resourceTabName: _settings.BlightMapTabName.Value,
                 withdrawFragmentPath: mapIdentifier,
                 fragmentStock: _settings.BlightMapStock.Value,
                 minFragments: 1,
-                stashItemThreshold: ctx.Settings.Run.StashItemThreshold.Value
+                stashItemThreshold: 0
             );
         }
 
@@ -99,10 +104,8 @@ namespace AutoExile.Modes
             _mapCompleted = false;
             _lastMapAreaName = "";
 
-            // Enable combat — blight needs skills for sweep + self-defense
             ModeHelpers.EnableDefaultCombat(ctx);
 
-            // Determine starting phase based on where we are
             var gc = ctx.Game;
             if (gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown)
             {
@@ -113,7 +116,6 @@ namespace AutoExile.Modes
             }
             else
             {
-                // Already in a map — initialize blight state
                 _blight.Reset();
                 _blight.InitializeFromCurrentEntities(gc);
                 _phase = BlightPhase.FindPump;
@@ -136,7 +138,6 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            // Detect area changes
             var currentArea = gc.Area?.CurrentArea?.Name ?? "";
             if (!string.IsNullOrEmpty(currentArea) && currentArea != _lastMapAreaName)
             {
@@ -144,7 +145,6 @@ namespace AutoExile.Modes
                 _lastMapAreaName = currentArea;
             }
 
-            // Always tick blight state + combat when in map
             if (gc.Area?.CurrentArea != null && !gc.Area.CurrentArea.IsHideout && !gc.Area.CurrentArea.IsTown)
             {
                 _blight.Tick(gc);
@@ -172,12 +172,10 @@ namespace AutoExile.Modes
                 ctx.Combat.Tick(ctx);
             }
 
-            // Tick interaction system
             var interactionResult = ctx.Interaction.Tick(gc);
 
             switch (_phase)
             {
-                // --- Hideout phases ---
                 case BlightPhase.InHideout:
                 case BlightPhase.StashItems:
                 case BlightPhase.OpenMap:
@@ -199,7 +197,6 @@ namespace AutoExile.Modes
                     }
                     break;
 
-                // --- Map phases ---
                 case BlightPhase.FindPump:
                     TickFindPump(ctx);
                     break;
@@ -237,24 +234,17 @@ namespace AutoExile.Modes
             }
         }
 
-        // =================================================================
-        // Area change detection
-        // =================================================================
-
         private void OnAreaChanged(BotContext ctx, string newArea)
         {
             var gc = ctx.Game;
 
-            // Cancel all in-flight systems on any area change
             ModeHelpers.CancelAllSystems(ctx);
             _hideoutFlow.Cancel();
 
             if (gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown)
             {
-                // Arrived in hideout — decide next step
                 if (_mapCompleted)
                 {
-                    // Map was completed, start new cycle
                     _phase = BlightPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
                     _mapCompleted = false;
@@ -263,7 +253,6 @@ namespace AutoExile.Modes
                 }
                 else if (_blight.DeathCount > 0 && _blight.DeathCount < MaxDeaths)
                 {
-                    // Died and revived — try to re-enter map via portal
                     _phase = BlightPhase.EnterPortal;
                     _phaseStartTime = DateTime.Now;
                     _hideoutFlow.StartPortalReentry();
@@ -271,7 +260,6 @@ namespace AutoExile.Modes
                 }
                 else if (_blight.DeathCount >= MaxDeaths)
                 {
-                    // Too many deaths — start fresh
                     _blight.Reset();
                     _phase = BlightPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
@@ -287,9 +275,8 @@ namespace AutoExile.Modes
             }
             else
             {
-                // Entered a map — start looking for pump
-                var deathCount = _blight.DeathCount; // preserve across reset
-                var portalPos = _blight.PortalPosition; // preserve — portal doesn't move
+                var deathCount = _blight.DeathCount;
+                var portalPos = _blight.PortalPosition;
                 _blight.Reset();
                 _blight.DeathCount = deathCount;
                 _blight.PortalPosition = portalPos;
@@ -301,10 +288,6 @@ namespace AutoExile.Modes
                 StatusText = "Entered map — finding pump";
             }
         }
-
-        // =================================================================
-        // Map phases
-        // =================================================================
 
         private bool _nudgedForPump;
 
@@ -577,8 +560,6 @@ namespace AutoExile.Modes
             }
         }
 
-        // --- Tower Management with safety positioning ---
-
         private void TickTowerManagement(BotContext ctx)
         {
             if (_blight.IsEncounterDone)
@@ -611,7 +592,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Safety check: ensure we never enter sweep while timer is still running in-game
             if (!_blight.IsTimerDone)
             {
                 _phase = BlightPhase.TowerManagement;
@@ -623,8 +603,6 @@ namespace AutoExile.Modes
             var elapsedAfterTimer = (DateTime.Now - _phaseStartTime).TotalSeconds;
             var sweepDelay = _settings.SweepDelayAfterTimerSeconds.Value;
 
-            // Fallback: 60 seconds (1 minute) after timer ends, force transition to sweep phase
-            // even if StandAtTower is enabled, to hunt down remaining stragglers and allow loot to spawn.
             const float StandAtTowerFallbackSeconds = 60f;
             bool forceSweepFallback = elapsedAfterTimer >= StandAtTowerFallbackSeconds;
 
@@ -649,7 +627,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Before sweep delay: prioritize combat over tower actions.
             if (ctx.Combat.NearbyMonsterCount > 0)
             {
                 if (_towerAction != null)
@@ -663,8 +640,6 @@ namespace AutoExile.Modes
             }
         }
 
-        // --- Tower action loop with safety positioning ---
-
         private void TickTowerLoop(BotContext ctx)
         {
             var gc = ctx.Game;
@@ -672,7 +647,6 @@ namespace AutoExile.Modes
             if (ctx.Interaction.IsBusy)
                 return;
 
-            // Combat priority — cancel tower navigation if monsters are nearby.
             if (_towerAction != null && ctx.Combat.NearbyMonsterCount > 0)
             {
                 CancelTowerAction(ctx);
@@ -680,7 +654,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Don't build or upgrade towers if "Don't Build Towers" is enabled
             if (_settings.DontBuildTowers.Value)
             {
                 if (_towerAction != null)
@@ -691,16 +664,13 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // If StandAtTower is enabled, hold position near the pump
             if (_settings.StandAtTower.Value)
             {
                 TickSafetyPosition(ctx);
             }
 
-            // Tick active tower action
             if (_towerAction != null)
             {
-                // If StandAtTower is enabled, cancel tower actions that require walking away
                 if (_settings.StandAtTower.Value && _blight.DefensePosition.HasValue)
                 {
                     var distFromTower = Vector2.Distance(_towerAction.TargetGridPos, _blight.DefensePosition.Value);
@@ -738,7 +708,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Build cooldown
             if ((DateTime.Now - _lastTowerActionEndAt).TotalMilliseconds < _settings.TowerBuildCooldownMs.Value)
             {
                 TickSafetyPosition(ctx);
@@ -746,7 +715,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Don't start new tower actions if pump is under attack — return to defend
             if (_blight.PumpUnderAttack)
             {
                 TickSafetyPosition(ctx);
@@ -754,13 +722,11 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Try upgrade first, then build
             if (!TryStartTowerAction(ctx, TowerAction.ActionType.Upgrade))
                 TryStartTowerAction(ctx, TowerAction.ActionType.Build);
 
             if (_towerAction == null)
             {
-                // No tower actions available — hold position near pump
                 TickSafetyPosition(ctx);
                 StatusText = $"No tower actions — {_blight.LaneDebug}";
                 _lastTowerActionEndAt = DateTime.Now;
@@ -780,7 +746,7 @@ namespace AutoExile.Modes
             if (distToDefense > safetyRadius && !ctx.Navigation.IsNavigating)
             {
                 var dir = Vector2.Normalize(defensePos - playerPos);
-                var targetPos = defensePos - dir * 10f; // stand 10 grid units from hub
+                var targetPos = defensePos - dir * 10f;
                 ctx.Navigation.NavigateTo(gc, targetPos);
             }
         }
@@ -793,7 +759,6 @@ namespace AutoExile.Modes
             if (action.CurrentPhase == TowerAction.Phase.Failed)
                 return false;
 
-            // If StandAtTower is enabled, reject distant tower builds/upgrades that require walking away
             if (_settings.StandAtTower.Value && _blight.DefensePosition.HasValue)
             {
                 var dist = Vector2.Distance(action.TargetGridPos, _blight.DefensePosition.Value);
@@ -818,10 +783,6 @@ namespace AutoExile.Modes
             ctx.Navigation.Stop(ctx.Game);
         }
 
-        // =================================================================
-        // Sweep — hunt cached monsters, explore for stragglers, return to pump periodically
-        // =================================================================
-
         private void EnterSweepPhase()
         {
             _phase = BlightPhase.Sweep;
@@ -844,7 +805,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Safety guard: If timer is still running in-game, immediately cancel sweep and return to pump
             if (!_blight.IsTimerDone)
             {
                 ctx.Navigation.Stop(ctx.Game);
@@ -859,10 +819,8 @@ namespace AutoExile.Modes
             var defensePos = _blight.DefensePosition ?? playerPos;
             var now = DateTime.Now;
 
-            // Track any lane endpoints the player passed near during movement
             MarkLanesNearPlayerAsSwept(playerPos, defensePos);
 
-            // --- Priority 1: Fight nearby monsters ---
             if (ctx.Combat.NearbyMonsterCount > 0)
             {
                 if (_sweepCombatEngageTime == DateTime.MinValue || ctx.Combat.NearbyMonsterCount < _sweepCombatEngageCount)
@@ -886,7 +844,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // --- Priority 2: Chase cached monsters in network bubble (closest to pump first) ---
             if (ctx.Combat.CachedMonsterCount > 0)
             {
                 _sweepCombatEngageTime = DateTime.MinValue;
@@ -906,22 +863,15 @@ namespace AutoExile.Modes
             _sweepCombatEngageTime = DateTime.MinValue;
             _sweepCombatEngageCount = 0;
 
-            // --- Priority 3: Full Lane Patrol State Machine ---
             TickSweepExplore(ctx, playerPos, defensePos);
         }
 
-
-        /// <summary>
-        /// Patrols each Blight lane to its absolute spawn endpoint, returns to defend the pump,
-        /// and advances to the next lane while deduplicating overlapping endpoints.
-        /// </summary>
         private void TickSweepExplore(BotContext ctx, Vector2 playerPos, Vector2 defensePos)
         {
             var gc = ctx.Game;
             var now = DateTime.Now;
             var laneTracker = _blight.LaneTracker;
 
-            // Fallback: If no lane data exists, use exploration map
             if (!laneTracker.HasLaneData || laneTracker.Lanes.Count == 0)
             {
                 if (ctx.Exploration.IsInitialized)
@@ -943,7 +893,6 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Reset cycle if all lanes have been swept
             if (_sweptLaneIndices.Count >= laneTracker.Lanes.Count)
             {
                 _sweptLaneIndices.Clear();
@@ -952,10 +901,8 @@ namespace AutoExile.Modes
             bool laneTimedOut = _lanePatrolStartedAt != DateTime.MinValue
                 && (now - _lanePatrolStartedAt).TotalSeconds > LanePatrolTimeoutSeconds;
 
-            // --- SubPhase 1: Patrol outward to the end of the lane ---
             if (_sweepSubPhase == SweepSubPhase.PatrolLaneOutward)
             {
-                // Find next unswept lane
                 while (_sweptLaneIndices.Contains(_currentPatrolLaneIndex) && _sweptLaneIndices.Count < laneTracker.Lanes.Count)
                 {
                     _currentPatrolLaneIndex = (_currentPatrolLaneIndex + 1) % laneTracker.Lanes.Count;
@@ -965,7 +912,6 @@ namespace AutoExile.Modes
                 var furthestEndpoint = GetLaneFurthestEndpoint(lane, defensePos);
                 var distToEndpoint = Vector2.Distance(playerPos, furthestEndpoint);
 
-                // Arrived at portal endpoint or timed out -> mark swept & return to pump
                 if (distToEndpoint < 25f || laneTimedOut)
                 {
                     MarkLanesNearPositionAsSwept(furthestEndpoint, defensePos);
@@ -988,7 +934,6 @@ namespace AutoExile.Modes
 
                     if (!pathFound)
                     {
-                        // Endpoint unreachable — mark swept and return to pump
                         _sweptLaneIndices.Add(_currentPatrolLaneIndex);
                         _sweepSubPhase = SweepSubPhase.ReturnToPump;
                         _lanePatrolStartedAt = now;
@@ -998,12 +943,10 @@ namespace AutoExile.Modes
                 }
                 StatusText = $"Sweep: traversing lane {_currentPatrolLaneIndex + 1}/{laneTracker.Lanes.Count} to portal (dist: {distToEndpoint:F0})";
             }
-            // --- SubPhase 2: Return to defend pump before next lane ---
             else if (_sweepSubPhase == SweepSubPhase.ReturnToPump)
             {
                 var distToPump = Vector2.Distance(playerPos, defensePos);
 
-                // Arrived at pump or timed out -> start next lane outward
                 if (distToPump < 20f || laneTimedOut)
                 {
                     _currentPatrolLaneIndex = (_currentPatrolLaneIndex + 1) % laneTracker.Lanes.Count;
@@ -1082,10 +1025,6 @@ namespace AutoExile.Modes
 
             return bestPos;
         }
-
-        // =================================================================
-        // Chest + Loot phase
-        // =================================================================
 
         private DateTime _lastEmptyScanAt = DateTime.MinValue;
         private const float LootTimeoutSeconds = 120f;
@@ -1235,10 +1174,6 @@ namespace AutoExile.Modes
             StatusText = $"Searching for remaining loot... ({_lootTracker.PickupCount} picked)";
         }
 
-        // =================================================================
-        // Exit Map — navigate to cached portal and click it
-        // =================================================================
-
         private void EnterExitMapPhase(BotContext ctx)
         {
             _phase = BlightPhase.ExitMap;
@@ -1327,10 +1262,6 @@ namespace AutoExile.Modes
             StatusText = "No portal found — waiting";
         }
 
-        // =================================================================
-        // Render
-        // =================================================================
-
         public void Render(BotContext ctx)
         {
             if (ctx.Graphics == null) return;
@@ -1338,7 +1269,6 @@ namespace AutoExile.Modes
             var cam = gc.IngameState.Camera;
             var g = ctx.Graphics;
 
-            // --- HUD ---
             var hudY = 100f;
             var hudX = 20f;
             var lineH = 16f;
@@ -1393,11 +1323,9 @@ namespace AutoExile.Modes
                 hudY += lineH;
             }
 
-            // --- World drawing (only in map) ---
             if (gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown)
                 return;
 
-            // Pump entity (clickable)
             if (_blight.PumpPosition.HasValue)
             {
                 var pumpWorld = Systems.Pathfinding.GridToWorld3D(gc, _blight.PumpPosition.Value);
@@ -1408,7 +1336,6 @@ namespace AutoExile.Modes
                 g.DrawCircleInWorld(pumpWorld, buildRadiusWorld, new SharpDX.Color(255, 200, 0, 40), 1.5f);
             }
 
-            // Defense point (lane hub — where monsters converge)
             if (_blight.DefensePosition.HasValue && _blight.DefensePosition != _blight.PumpPosition)
             {
                 var defWorld = Systems.Pathfinding.GridToWorld3D(gc, _blight.DefensePosition.Value);
@@ -1416,7 +1343,6 @@ namespace AutoExile.Modes
                 g.DrawCircleInWorld(defWorld, 30f, SharpDX.Color.Cyan, 2f);
             }
 
-            // Active tower target
             if (_towerAction != null && !_towerAction.IsComplete)
             {
                 var targetWorld = Systems.Pathfinding.GridToWorld3D(gc, _towerAction.TargetGridPos);
@@ -1425,7 +1351,6 @@ namespace AutoExile.Modes
                 g.DrawText("TARGET", targetScreen + new Vector2(-20, -25), SharpDX.Color.Gold);
             }
 
-            // Cached portal
             if (_blight.PortalPosition.HasValue)
             {
                 var portalWorld = Systems.Pathfinding.GridToWorld3D(gc, _blight.PortalPosition.Value);
@@ -1434,13 +1359,11 @@ namespace AutoExile.Modes
                 g.DrawCircleInWorld(portalWorld, 20f, SharpDX.Color.Aqua, 1.5f);
             }
 
-            // Chests
             foreach (var chestPos in _blight.ChestPositions)
             {
                 g.DrawText("C", Systems.Pathfinding.GridToScreen(gc, chestPos), SharpDX.Color.Gold);
             }
 
-            // Lanes
             var laneTracker = _blight.LaneTracker;
             if (laneTracker.HasLaneData)
             {
@@ -1457,7 +1380,6 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Navigation path
             if (ctx.Navigation.IsNavigating)
             {
                 var path = ctx.Navigation.CurrentNavPath;
@@ -1469,7 +1391,6 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Danger indicators
             if (_blight.PumpUnderAttack)
             {
                 g.DrawText("PUMP UNDER ATTACK!", new Vector2(hudX, hudY), SharpDX.Color.Red);
@@ -1502,10 +1423,6 @@ namespace AutoExile.Modes
             }
         }
 
-        // =================================================================
-        // Helpers
-        // =================================================================
-
         private Entity? FindPumpEntity(GameController gc)
         {
             foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
@@ -1532,7 +1449,6 @@ namespace AutoExile.Modes
             var absPos = new Vector2(windowRect.X + windowRelativePos.X, windowRect.Y + windowRelativePos.Y);
             return DoClick(absPos);
         }
-
     }
 
     public enum BlightPhase
@@ -1543,7 +1459,7 @@ namespace AutoExile.Modes
         InHideout,
         StashItems,
         OpenMap,
-        EnterPortal,   // re-enter map after death
+        EnterPortal,
 
         // Map phases
         FindPump,
@@ -1557,5 +1473,4 @@ namespace AutoExile.Modes
         ExitMap,
         Done,
     }
-
 }
