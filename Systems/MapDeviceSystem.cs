@@ -258,6 +258,67 @@ namespace AutoExile.Systems
         private MapDeviceResult TickSelectMap(GameController gc)
         {
             var atlas = gc.IngameState.IngameUi.Atlas;
+            var invPanel = gc.IngameState.IngameUi.InventoryPanel;
+
+            bool isSimulacrum = (_inventoryFragmentPath != null && _inventoryFragmentPath.Contains("CurrencyAfflictionFragment", StringComparison.OrdinalIgnoreCase))
+                || _mapFilter == IsSimulacrum;
+
+            // ── Dedicated Simulacrum Flow: Right-click directly from inventory ──
+            if (isSimulacrum)
+            {
+                if (!CanAct()) return MapDeviceResult.InProgress;
+
+                // Ensure inventory panel is open
+                if (invPanel == null || !invPanel.IsVisible)
+                {
+                    if (_invOpenAttempts > MaxInvOpenAttempts)
+                    {
+                        Status = "[Simulacrum] Failed to open inventory panel";
+                        _phase = MapDevicePhase.Idle;
+                        return MapDeviceResult.Failed;
+                    }
+
+                    if (BotInput.PressKey(Keys.I))
+                    {
+                        _invOpenAttempts++;
+                        _lastActionTime = DateTime.Now;
+                        Status = $"[Simulacrum] Opening inventory (attempt {_invOpenAttempts})...";
+                    }
+                    return MapDeviceResult.InProgress;
+                }
+
+                var invItems = gc.IngameState.ServerData?.PlayerInventories?[0]?.Inventory?.InventorySlotItems;
+                if (invItems != null)
+                {
+                    foreach (var slotItem in invItems)
+                    {
+                        var item = slotItem.Item;
+                        if (item?.Path == null) continue;
+
+                        if (item.Path.Contains("CurrencyAfflictionFragment", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var windowRect = gc.Window.GetWindowRectangle();
+                            var slotRect = slotItem.GetClientRect();
+                            var absPos = new Vector2(windowRect.X + slotRect.Center.X, windowRect.Y + slotRect.Center.Y);
+
+                            if (BotInput.RightClick(absPos))
+                            {
+                                _lastActionTime = DateTime.Now;
+                                _phase = MapDevicePhase.WaitForPortals;
+                                _phaseStartTime = DateTime.Now;
+                                Status = "[Simulacrum] Right-clicked Simulacrum in inventory — waiting for portals";
+                                return MapDeviceResult.InProgress;
+                            }
+                        }
+                    }
+                }
+
+                Status = "[Simulacrum] No Simulacrum found in inventory to right-click";
+                _phase = MapDevicePhase.Idle;
+                return MapDeviceResult.Failed;
+            }
+
+            // ── Standard Map / Blight Flow ──
             if (atlas?.IsVisible != true)
             {
                 Status = "Atlas closed unexpectedly";
@@ -361,7 +422,6 @@ namespace AutoExile.Systems
             {
                 if (!CanAct()) return MapDeviceResult.InProgress;
 
-                var invPanel = gc.IngameState.IngameUi.InventoryPanel;
                 if (invPanel == null || !invPanel.IsVisible)
                 {
                     if (namedMapFlow && _invOpenAttempts >= 2)
@@ -446,14 +506,14 @@ namespace AutoExile.Systems
             }
 
             var rect = targetMap.GetClientRect();
-            var windowRect = gc.Window.GetWindowRectangle();
+            var windowRect3 = gc.Window.GetWindowRectangle();
             var clickPos = BotInput.RandomizeWithinRect(rect);
-            var absPos = new Vector2(windowRect.X + clickPos.X, windowRect.Y + clickPos.Y);
+            var absPos3 = new Vector2(windowRect3.X + clickPos.X, windowRect3.Y + clickPos.Y);
 
             bool useCtrlClick = namedMapFlow || ForceCtrlClick;
             bool clicked = useCtrlClick
-                ? BotInput.CtrlClick(absPos)
-                : BotInput.RightClick(absPos);
+                ? BotInput.CtrlClick(absPos3)
+                : BotInput.RightClick(absPos3);
             if (!clicked)
                 return MapDeviceResult.InProgress;
 
@@ -923,8 +983,8 @@ namespace AutoExile.Systems
         public static bool IsSimulacrum(Element item)
         {
             var entity = item.Entity;
-            if (entity == null) return false;
-            return entity.Path?.EndsWith("CurrencyAfflictionFragment") == true;
+            if (entity == null || entity.Path == null) return false;
+            return entity.Path.Contains("CurrencyAfflictionFragment", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool IsStandardMap(Element item)

@@ -328,23 +328,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            if (elapsed > 5)
-            {
-                bool hasBlightEntities = _blight.CachedTowers.Count > 0 ||
-                    _blight.CachedMonsters.Values.Any(m => m.AssumedAlive);
-
-                if (hasBlightEntities)
-                {
-                    _blight.IsEncounterActive = true;
-                    _blight.IsTimerDone = true;
-                    _blight.TimerDoneAt ??= DateTime.Now;
-                    EnterSweepPhase();
-                    StatusText = "Pump not found but blight entities present — sweeping";
-                    return;
-                }
-            }
-
-            StatusText = "Searching for blight pump...";
+            StatusText = $"Searching for blight pump ({elapsed:F0}s)...";
 
             if (elapsed > 30)
             {

@@ -467,7 +467,7 @@ namespace AutoExile.Systems
         }
 
         private int _timerMissingTicks;
-        private const int TimerMissingTicksThreshold = 300; // ~5-10s of sustained missing frames before declaring done
+        private const int TimerMissingTicksThreshold = 600; // ~10-15s sustained missing before trusting expiration
 
         private void TrackCountdown(GameController gc)
         {
@@ -480,12 +480,12 @@ namespace AutoExile.Systems
                     ?.GetChildFromIndices(1, 25, 4, 0, 0, 0, 0);
                 if (countdownElement != null && countdownElement.IsVisible && !string.IsNullOrEmpty(countdownElement.Text))
                 {
-                    rawText = countdownElement.Text;
+                    rawText = ExtractTimeSubstring(countdownElement.Text);
                 }
             }
             catch { }
 
-            // Fallback search across LeagueMechanic and IngameUi children
+            // Secondary search across LeagueMechanic and IngameUi children
             if (string.IsNullOrEmpty(rawText))
             {
                 try
@@ -501,7 +501,7 @@ namespace AutoExile.Systems
 
                         if (string.IsNullOrEmpty(rawText))
                         {
-                            for (int i = 0; i < ui.ChildCount && i < 50; i++)
+                            for (int i = 0; i < ui.ChildCount && i < 40; i++)
                             {
                                 var child = ui.GetChildAtIndex(i);
                                 if (child != null && child.IsVisible)
@@ -528,8 +528,7 @@ namespace AutoExile.Systems
 
             if (!string.IsNullOrEmpty(CountdownText))
             {
-                var text = CountdownText.Trim();
-                var parts = text.Split(':');
+                var parts = CountdownText.Split(':');
                 if (parts.Length == 2 && int.TryParse(parts[0], out int mins) && int.TryParse(parts[1], out int secs))
                 {
                     secondsRemaining = (mins * 60) + secs;
@@ -584,12 +583,12 @@ namespace AutoExile.Systems
                         ? (DateTime.Now - EncounterStartedAt.Value).TotalSeconds
                         : 0;
 
-                    double requiredAge = DeathCount > 0 ? 15.0 : 360.0;
+                    double requiredAge = DeathCount > 0 ? 30.0 : 360.0;
 
                     if (encounterAge > requiredAge)
                     {
                         _timerCheckTicks++;
-                        if (_timerCheckTicks > 60)
+                        if (_timerCheckTicks > 90)
                         {
                             if (!IsTimerDone)
                             {
@@ -602,22 +601,45 @@ namespace AutoExile.Systems
             }
         }
 
+        private static string ExtractTimeSubstring(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            var trimmed = text.Trim();
+
+            // Direct match "3:45" or "03:45"
+            if (trimmed.Length >= 3 && trimmed.Length <= 5 && trimmed.Contains(':'))
+            {
+                var p = trimmed.Split(':');
+                if (p.Length == 2 && int.TryParse(p[0], out _) && int.TryParse(p[1], out _))
+                    return trimmed;
+            }
+
+            // Substring search (e.g. "Time Remaining: 3:45")
+            int colonIdx = trimmed.IndexOf(':');
+            if (colonIdx > 0 && colonIdx < trimmed.Length - 2)
+            {
+                int start = colonIdx - 1;
+                while (start > 0 && char.IsDigit(trimmed[start - 1])) start--;
+                int end = colonIdx + 1;
+                while (end < trimmed.Length && char.IsDigit(trimmed[end])) end++;
+
+                var candidate = trimmed.Substring(start, end - start);
+                var p = candidate.Split(':');
+                if (p.Length == 2 && int.TryParse(p[0], out _) && int.TryParse(p[1], out _))
+                    return candidate;
+            }
+
+            return "";
+        }
+
         private static string FindTimerTextRecursive(ExileCore.PoEMemory.Element? elem, int depth, int maxDepth)
         {
             if (elem == null || !elem.IsVisible || depth > maxDepth)
                 return "";
 
-            var text = elem.Text;
-            if (!string.IsNullOrEmpty(text))
-            {
-                var trimmed = text.Trim();
-                if (trimmed.Length >= 3 && trimmed.Length <= 5 && trimmed.Contains(':') && char.IsDigit(trimmed[0]))
-                {
-                    var parts = trimmed.Split(':');
-                    if (parts.Length == 2 && int.TryParse(parts[0], out _) && int.TryParse(parts[1], out _))
-                        return trimmed;
-                }
-            }
+            var match = ExtractTimeSubstring(elem.Text);
+            if (!string.IsNullOrEmpty(match))
+                return match;
 
             for (int i = 0; i < elem.ChildCount; i++)
             {
@@ -632,7 +654,7 @@ namespace AutoExile.Systems
 
             return "";
         }
-        
+
         private void TrackEncounterCompletion(GameController gc)
         {
             if (IsEncounterDone) return;
