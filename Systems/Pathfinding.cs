@@ -520,7 +520,7 @@ namespace AutoExile.Systems
         }
 
         private static bool HasLineOfSight(int[][] grid, Vector2 a, Vector2 b, int rows, int cols,
-            int minWalkable = 4)
+    int minWalkable = 4)
         {
             var ax = (int)a.X;
             var ay = (int)a.Y;
@@ -542,11 +542,26 @@ namespace AutoExile.Systems
                     return false;
 
                 var e2 = 2 * err;
-                if (e2 > -dy) { err -= dy; cx += sx; }
-                if (e2 < dx) { err += dx; cy += sy; }
+                var stepX = e2 > -dy;
+                var stepY = e2 < dx;
+
+                // Prevent diagonal ray-cutting through thin corners/walls:
+                // If moving diagonally, both orthogonal neighbors must also be walkable.
+                if (stepX && stepY)
+                {
+                    var ox = cx + sx;
+                    var oy = cy + sy;
+                    if (ox < 0 || ox >= cols || oy < 0 || oy >= rows)
+                        return false;
+                    if (grid[cy][ox] < minWalkable || grid[oy][cx] < minWalkable)
+                        return false;
+                }
+
+                if (stepX) { err -= dy; cx += sx; }
+                if (stepY) { err += dx; cy += sy; }
             }
 
-            return true;
+            return cx >= 0 && cx < cols && cy >= 0 && cy < rows && grid[cy][cx] >= minWalkable;
         }
 
         /// <summary>

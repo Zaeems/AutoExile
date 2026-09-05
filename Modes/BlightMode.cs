@@ -43,6 +43,10 @@ namespace AutoExile.Modes
         private Vector2? _currentChestTarget;
         private DateTime _chestNavStartedAt = DateTime.MinValue;
         private const float ChestNavTimeoutSeconds = 30f;
+        private readonly HashSet<int> _lootedLaneIndices = new();
+        private int _currentLootLaneIndex;
+        private DateTime _chestOpenedDelayUntil = DateTime.MinValue;
+        private const float LootEndpointSkipRadius = 65f;
 
         // Sweep state
         private enum SweepSubPhase { PatrolLaneOutward, ReturnToPump }
@@ -589,7 +593,6 @@ namespace AutoExile.Modes
 
             if (_settings.StandAtTower.Value)
             {
-                // When StandAtTower is enabled, hold position while fighting nearby monsters
                 if (_blight.AliveMonsterCount > 0 && ctx.Combat.NearbyMonsterCount > 0)
                 {
                     TickSafetyPosition(ctx);
@@ -639,7 +642,7 @@ namespace AutoExile.Modes
                     CancelTowerAction(ctx);
 
                 TickSafetyPosition(ctx);
-                StatusText = $"Towers disabled — {_blight.LaneDebug}";
+                StatusText = "Towers disabled";
                 return;
             }
 
@@ -690,7 +693,7 @@ namespace AutoExile.Modes
             if ((DateTime.Now - _lastTowerActionEndAt).TotalMilliseconds < _settings.TowerBuildCooldownMs.Value)
             {
                 TickSafetyPosition(ctx);
-                StatusText = $"Tower cooldown — {_blight.LaneDebug}";
+                StatusText = "Tower cooldown";
                 return;
             }
 
@@ -707,7 +710,7 @@ namespace AutoExile.Modes
             if (_towerAction == null)
             {
                 TickSafetyPosition(ctx);
-                StatusText = $"No tower actions — {_blight.LaneDebug}";
+                StatusText = "No tower actions";
                 _lastTowerActionEndAt = DateTime.Now;
             }
         }
@@ -851,7 +854,11 @@ namespace AutoExile.Modes
             var now = DateTime.Now;
             var laneTracker = _blight.LaneTracker;
 
-            if (!laneTracker.HasLaneData || laneTracker.Lanes.Count == 0)
+            // If no lane data, or if ALL known lanes were already swept and encounter is still active,
+            // fall back to exploration to find undiscovered lanes / distant stragglers.
+            bool allLanesSwept = laneTracker.HasLaneData && _sweptLaneIndices.Count >= laneTracker.Lanes.Count;
+
+            if (!laneTracker.HasLaneData || laneTracker.Lanes.Count == 0 || allLanesSwept)
             {
                 if (ctx.Exploration.IsInitialized)
                 {
@@ -865,16 +872,16 @@ namespace AutoExile.Modes
                     if (target.HasValue)
                     {
                         ctx.Navigation.NavigateTo(gc, target.Value);
-                        StatusText = $"Sweep: exploring map ({ctx.Combat.CachedMonsterCount} alive)";
+                        StatusText = $"Sweep: exploring unvisited map area for stragglers ({ctx.Combat.CachedMonsterCount} alive)";
                         return;
                     }
                 }
-                return;
-            }
 
-            if (_sweptLaneIndices.Count >= laneTracker.Lanes.Count)
-            {
-                _sweptLaneIndices.Clear();
+                // If exploration returned no target, loop lane patrol again
+                if (allLanesSwept)
+                {
+                    _sweptLaneIndices.Clear();
+                }
             }
 
             bool laneTimedOut = _lanePatrolStartedAt != DateTime.MinValue
@@ -886,6 +893,9 @@ namespace AutoExile.Modes
                 {
                     _currentPatrolLaneIndex = (_currentPatrolLaneIndex + 1) % laneTracker.Lanes.Count;
                 }
+
+                if (_currentPatrolLaneIndex >= laneTracker.Lanes.Count)
+                    _currentPatrolLaneIndex = 0;
 
                 var lane = laneTracker.Lanes[_currentPatrolLaneIndex];
                 var furthestEndpoint = GetLaneFurthestEndpoint(lane, defensePos);
@@ -1006,7 +1016,7 @@ namespace AutoExile.Modes
         }
 
         private DateTime _lastEmptyScanAt = DateTime.MinValue;
-        private const float LootTimeoutSeconds = 120f;
+        private const float LootTimeoutSeconds = 180f;
         private const float EmptyGraceSeconds = 5f;
 
         private void EnterOpenChestsPhase()
@@ -1014,8 +1024,11 @@ namespace AutoExile.Modes
             _phase = BlightPhase.OpenChests;
             _phaseStartTime = DateTime.Now;
             _currentChestTarget = null;
+            _chestOpenedDelayUntil = DateTime.MinValue;
             _lootTracker.Reset();
             _lastEmptyScanAt = DateTime.MinValue;
+            _lootedLaneIndices.Clear();
+            _currentLootLaneIndex = 0;
         }
 
         private void TickOpenChests(BotContext ctx, InteractionResult interactionResult)
@@ -1023,7 +1036,14 @@ namespace AutoExile.Modes
             _lootTracker.HandleResult(interactionResult, ctx);
 
             if (interactionResult == InteractionResult.Succeeded || interactionResult == InteractionResult.Failed)
+            {
+                if (_currentChestTarget.HasValue && interactionResult == InteractionResult.Succeeded)
+                {
+                    // Wait 200ms for chest contents to spawn on the ground before scanning
+                    _chestOpenedDelayUntil = DateTime.Now.AddMilliseconds(200);
+                }
                 _currentChestTarget = null;
+            }
 
             if ((DateTime.Now - _phaseStartTime).TotalSeconds > LootTimeoutSeconds)
             {
@@ -1032,11 +1052,23 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // Delay scan right after opening a chest to let ground entities and labels spawn
+            if (DateTime.Now < _chestOpenedDelayUntil)
+            {
+                StatusText = "Waiting for chest loot to drop...";
+                return;
+            }
+
             if (ctx.Interaction.IsBusy) return;
 
             var gc = ctx.Game;
             var playerPos = gc.Player.GridPosNum;
+            var defensePos = _blight.DefensePosition ?? playerPos;
 
+            // Issue 1: Skip any lane endpoints we coincidentally walked near
+            MarkLanesNearPositionAsLooted(playerPos, defensePos);
+
+            // 1. Pick up ground loot
             ctx.Loot.Scan(gc);
             var best = ctx.Loot.GetBestCandidate();
             if (best != null)
@@ -1050,6 +1082,7 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // 2. Open nearest visible unopened chest
             Entity? nearestChest = null;
             float nearestDist = float.MaxValue;
 
@@ -1073,6 +1106,7 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // 3. Navigate to cached chest positions
             if (_blight.ChestPositions.Count > 0)
             {
                 Vector2? nearestCachedChest = null;
@@ -1137,6 +1171,63 @@ namespace AutoExile.Modes
                 }
             }
 
+            // 4. Visit unvisited lane endpoints (where Blight reward chests spawn)
+            var laneTracker = _blight.LaneTracker;
+            if (laneTracker.HasLaneData && _lootedLaneIndices.Count < laneTracker.Lanes.Count)
+            {
+                // Pick the closest unlooted lane endpoint instead of strictly sequential cycling
+                int bestLaneIdx = -1;
+                float bestEndpointDist = float.MaxValue;
+                Vector2 bestEndpoint = Vector2.Zero;
+
+                for (int i = 0; i < laneTracker.Lanes.Count; i++)
+                {
+                    if (_lootedLaneIndices.Contains(i)) continue;
+                    var ep = GetLaneFurthestEndpoint(laneTracker.Lanes[i], defensePos);
+                    var d = Vector2.Distance(playerPos, ep);
+                    if (d < bestEndpointDist)
+                    {
+                        bestEndpointDist = d;
+                        bestLaneIdx = i;
+                        bestEndpoint = ep;
+                    }
+                }
+
+                if (bestLaneIdx != -1)
+                {
+                    _currentLootLaneIndex = bestLaneIdx;
+
+                    if (bestEndpointDist < 25f)
+                    {
+                        MarkLanesNearPositionAsLooted(bestEndpoint, defensePos);
+                        _lastEmptyScanAt = DateTime.MinValue;
+                        return;
+                    }
+
+                    if (!ctx.Navigation.IsNavigating)
+                    {
+                        _lastEmptyScanAt = DateTime.MinValue;
+                        var pathFound = ctx.Navigation.NavigateTo(gc, bestEndpoint);
+                        if (!pathFound)
+                        {
+                            var walkable = ctx.Navigation.FindNearestWalkable(gc, bestEndpoint, 20);
+                            if (walkable.HasValue)
+                                pathFound = ctx.Navigation.NavigateTo(gc, walkable.Value);
+                        }
+
+                        if (!pathFound)
+                        {
+                            _lootedLaneIndices.Add(bestLaneIdx);
+                            return;
+                        }
+                    }
+
+                    StatusText = $"Visiting lane {bestLaneIdx + 1}/{laneTracker.Lanes.Count} endpoint for chests (dist: {bestEndpointDist:F0})";
+                    return;
+                }
+            }
+
+            // 5. If everything is checked and no loot visible, count grace period before exit
             if (_lastEmptyScanAt == DateTime.MinValue)
                 _lastEmptyScanAt = DateTime.Now;
 
@@ -1248,7 +1339,7 @@ namespace AutoExile.Modes
             var cam = gc.IngameState.Camera;
             var g = ctx.Graphics;
 
-            var hudY = 100f;
+            var hudY = 200f;
             var hudX = 20f;
             var lineH = 16f;
 
@@ -1428,19 +1519,31 @@ namespace AutoExile.Modes
             var absPos = new Vector2(windowRect.X + windowRelativePos.X, windowRect.Y + windowRelativePos.Y);
             return DoClick(absPos);
         }
+
+        private void MarkLanesNearPositionAsLooted(Vector2 position, Vector2 defensePos, float radius = LootEndpointSkipRadius)
+        {
+            var laneTracker = _blight.LaneTracker;
+            if (!laneTracker.HasLaneData) return;
+
+            for (int i = 0; i < laneTracker.Lanes.Count; i++)
+            {
+                if (_lootedLaneIndices.Contains(i)) continue;
+                var endpoint = GetLaneFurthestEndpoint(laneTracker.Lanes[i], defensePos);
+                if (Vector2.Distance(position, endpoint) <= radius)
+                {
+                    _lootedLaneIndices.Add(i);
+                }
+            }
+        }
     }
 
     public enum BlightPhase
     {
         Idle,
-
-        // Hideout phases
         InHideout,
         StashItems,
         OpenMap,
         EnterPortal,
-
-        // Map phases
         FindPump,
         NavigateToPump,
         StartEncounter,

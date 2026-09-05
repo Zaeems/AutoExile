@@ -722,7 +722,7 @@ namespace AutoExile
             var running = Settings.Running.Value;
             var color = running ? SharpDX.Color.LimeGreen : SharpDX.Color.Yellow;
             var status = running ? $"BOT: {_mode.Name}" : $"BOT: PAUSED ({_mode.Name})";
-            Graphics.DrawText(status, new Vector2(100, 80), color);
+            Graphics.DrawText(status, new Vector2(100, 160), color);
 
             var maxMin = Settings.Run.MaxRuntimeMinutes.Value;
             var elapsed = _runtime.ActiveDuration;
